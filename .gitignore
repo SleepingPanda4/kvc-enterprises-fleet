@@ -35,6 +35,10 @@ yarn-error.log*
 .vercel
 
 /dist/
+/data/
+*.db
+*.db-shm
+*.db-wal
 /.wrangler/
 /outputs/
 /work/

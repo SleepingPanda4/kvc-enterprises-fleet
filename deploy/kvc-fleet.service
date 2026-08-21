@@ -1,0 +1,27 @@
+[Unit]
+Description=KVC Fleet Management
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kvcfleet
+Group=kvcfleet
+WorkingDirectory=/opt/kvc-fleet/app
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3000
+Environment=DATABASE_URL=file:/var/lib/kvc-fleet/fleet.db
+ExecStartPre=/usr/bin/env npm run db:migrate
+ExecStart=/usr/bin/env npm run start
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kvc-fleet
+
+[Install]
+WantedBy=multi-user.target

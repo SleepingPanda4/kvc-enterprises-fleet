@@ -1,0 +1,7 @@
+fleet.example.com {
+    basic_auth {
+        kvcadmin REPLACE_WITH_OUTPUT_FROM_CADDY_HASH_PASSWORD
+    }
+
+    reverse_proxy 127.0.0.1:3000
+}

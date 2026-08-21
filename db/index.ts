@@ -1,13 +1,15 @@
-import { env } from "cloudflare:workers";
-import { drizzle } from "drizzle-orm/d1";
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "./schema";
 
-export function getDb() {
-  if (!env.DB) {
-    throw new Error(
-      "Cloudflare D1 binding `DB` is unavailable. Set the `d1` field in .openai/hosting.json to `DB` or let your control plane inject the real binding values before using the database."
-    );
-  }
+const databaseUrl = process.env.DATABASE_URL || "file:./data/kvc-fleet.db";
+const client = createClient({ url: databaseUrl });
 
-  return drizzle(env.DB, { schema });
+await client.execute("PRAGMA foreign_keys = ON");
+await client.execute("PRAGMA busy_timeout = 5000");
+
+const database = drizzle(client, { schema });
+
+export function getDb() {
+  return database;
 }

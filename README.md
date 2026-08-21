@@ -1,100 +1,90 @@
-# vinext-starter
+# KVC Fleet — LXC installation
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+This archive is the self-hosted edition of the KVC Enterprises fleet site. It
+runs as a standalone Node.js service and stores its data in a local SQLite file.
+It does not contain the records from the currently hosted Cloudflare D1
+database; a new installation starts with an empty fleet.
 
-## Prerequisites
+## Requirements
 
-- Node.js `>=22.13.0`
+- An unprivileged Debian 12 or Ubuntu 24.04 LXC
+- Node.js 22.13 or newer (Node.js 24 LTS recommended)
+- 2 CPU cores, 2 GB RAM, and 8 GB disk are sufficient for normal use
+- Root access during installation
 
-## Quick Start
+## Install
+
+Install operating-system prerequisites:
 
 ```bash
-npm install
-npm run dev
-npm run build
+apt update
+apt install -y ca-certificates curl sqlite3 xz-utils
 ```
 
-This starter does not use `wrangler.jsonc`.
+On an x86-64 LXC, install Node.js 24 LTS from the official binary:
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
-
-The user ID is stable for the same user on the same Site and different across Sites. Email and name are intended for display or contact purposes.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```bash
+cd /tmp
+NODE_VERSION=24.19.0
+curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
+curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt"
+grep " node-v${NODE_VERSION}-linux-x64.tar.xz$" SHASUMS256.txt | sha256sum -c -
+tar -xJf "node-v${NODE_VERSION}-linux-x64.tar.xz"
+cp -a "node-v${NODE_VERSION}-linux-x64"/{bin,include,lib,share} /usr/local/
+node --version
+npm --version
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+For an ARM64 LXC, replace `linux-x64` with `linux-arm64` in those commands.
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+Upload this archive to the LXC, then extract it:
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+```bash
+mkdir -p /opt/kvc-fleet/app
+tar -xzf /tmp/kvc-fleet-lxc.tar.gz \
+  -C /opt/kvc-fleet/app --strip-components=1
+cd /opt/kvc-fleet/app
+chmod +x deploy/install.sh
+./deploy/install.sh
+```
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+Confirm the service is healthy:
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
+```bash
+systemctl status kvc-fleet
+curl -I http://127.0.0.1:3000
+journalctl -u kvc-fleet -n 100 --no-pager
+```
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
+## Remote access
 
-## Useful Commands
+The application itself does not yet have user authentication. Do not expose
+port 3000 directly to the internet. Place it behind a private VPN, Cloudflare
+Access, or Caddy with authentication. `deploy/Caddyfile.example` is a starting
+point. Generate its password hash with `caddy hash-password`, replace the
+placeholder and domain, then validate and reload Caddy.
 
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
+## Data and backups
 
-## Learn More
+The database is stored at `/var/lib/kvc-fleet/fleet.db`. Back it up with the
+SQLite online backup command:
 
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+```bash
+mkdir -p /var/backups/kvc-fleet
+sqlite3 /var/lib/kvc-fleet/fleet.db \
+  ".backup '/var/backups/kvc-fleet/fleet-$(date +%F-%H%M).db'"
+```
+
+Database migrations run automatically before the service starts. To run them
+manually:
+
+```bash
+cd /opt/kvc-fleet/app
+sudo -u kvcfleet env DATABASE_URL=file:/var/lib/kvc-fleet/fleet.db npm run db:migrate
+```
+
+## Updating later
+
+Stop the service, back up the database, replace the application files with the
+new archive, and rerun `deploy/install.sh`. Application updates do not overwrite
+the database in `/var/lib/kvc-fleet`.
