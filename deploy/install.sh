@@ -33,7 +33,7 @@ fi
 install -d -o kvcfleet -g kvcfleet -m 0750 "${APP_DIR}" "${DATA_DIR}" "${BACKUP_DIR}"
 chown -R kvcfleet:kvcfleet "${APP_DIR}"
 
-runuser -u kvcfleet -- npm ci
+runuser -u kvcfleet -- npm install --no-audit --no-fund
 runuser -u kvcfleet -- env DATABASE_URL="file:${DATA_DIR}/fleet.db" npm run db:migrate
 runuser -u kvcfleet -- npm run build
 runuser -u kvcfleet -- npm prune --omit=dev
