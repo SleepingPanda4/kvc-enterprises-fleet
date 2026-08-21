@@ -1,0 +1,2 @@
+import { desc,eq } from "drizzle-orm"; import { getDb } from "../../../../db"; import { issues,vehicles } from "../../../../db/schema";
+export async function GET(_req:Request,{params}:{params:Promise<{id:string}>}){const{id}=await params;const db=getDb();const[vehicle]=await db.select().from(vehicles).where(eq(vehicles.id,Number(id))).limit(1);if(!vehicle)return Response.json({error:"Vehicle not found"},{status:404});const rows=await db.select().from(issues).where(eq(issues.vehicleId,vehicle.id)).orderBy(desc(issues.createdAt));return Response.json({vehicle,issues:rows})}

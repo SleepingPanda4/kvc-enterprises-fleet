@@ -1,0 +1,2 @@
+import { eq } from "drizzle-orm"; import { getDb } from "../../../../../db"; import { vehicles } from "../../../../../db/schema";
+export async function PATCH(req:Request,{params}:{params:Promise<{id:string}>}){const{id}=await params;const p=await req.json() as {routeNumber?:string|null};const db=getDb();const[row]=await db.update(vehicles).set({routeNumber:p.routeNumber?.trim()||null,updatedAt:new Date().toISOString()}).where(eq(vehicles.id,Number(id))).returning();return row?Response.json({vehicle:row}):Response.json({error:"Vehicle not found"},{status:404})}
