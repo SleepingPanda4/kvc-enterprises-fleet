@@ -3,12 +3,13 @@
 import { useState } from "react";
 import { useAuth } from "../auth/AuthGate";
 
-type Section = "overview" | "vehicles" | "routes" | "schedule" | "team";
+type Section = "overview" | "vehicles" | "routes" | "dro" | "schedule" | "team";
 
 const navigation: { key: Section; href: string; icon: string; label: string }[] = [
   { key: "overview", href: "/overview", icon: "⌂", label: "Overview" },
   { key: "vehicles", href: "/", icon: "▣", label: "Vehicles" },
   { key: "routes", href: "/routes", icon: "↗", label: "Routes" },
+  { key: "dro", href: "/dro", icon: "▤", label: "DRO" },
   { key: "schedule", href: "/schedule", icon: "◷", label: "Schedule" },
   { key: "team", href: "/team", icon: "◎", label: "Team" },
 ];
