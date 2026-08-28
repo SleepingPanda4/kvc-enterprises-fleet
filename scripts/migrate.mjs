@@ -42,6 +42,16 @@ const statements = [
     created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS routes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    route_number TEXT NOT NULL,
+    display_name TEXT,
+    description TEXT,
+    color TEXT DEFAULT '#087A46' NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS routes_route_number_unique ON routes (route_number)",
   `CREATE TABLE IF NOT EXISTS issues (
     id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
     vehicle_id INTEGER NOT NULL,
@@ -68,6 +78,98 @@ const statements = [
     created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS homebase_user_mappings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    homebase_user_id TEXT NOT NULL,
+    team_member_id INTEGER,
+    display_name TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (team_member_id) REFERENCES team_members (id) ON DELETE SET NULL
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS homebase_user_mappings_user_unique ON homebase_user_mappings (homebase_user_id)",
+  "CREATE INDEX IF NOT EXISTS homebase_user_mappings_team_member_idx ON homebase_user_mappings (team_member_id)",
+  `CREATE TABLE IF NOT EXISTS homebase_job_mappings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    homebase_job_id TEXT NOT NULL,
+    route_id INTEGER,
+    display_name TEXT,
+    assignment_type TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (route_id) REFERENCES routes (id) ON DELETE SET NULL
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS homebase_job_mappings_job_unique ON homebase_job_mappings (homebase_job_id)",
+  "CREATE INDEX IF NOT EXISTS homebase_job_mappings_route_idx ON homebase_job_mappings (route_id)",
+  `CREATE TABLE IF NOT EXISTS homebase_shifts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    homebase_shift_id TEXT NOT NULL,
+    homebase_user_id TEXT NOT NULL,
+    homebase_job_id TEXT NOT NULL,
+    team_member_id INTEGER,
+    employee_display_name TEXT NOT NULL,
+    schedule_date TEXT NOT NULL,
+    start_timestamp TEXT NOT NULL,
+    end_timestamp TEXT NOT NULL,
+    raw_assignment TEXT NOT NULL,
+    raw_note TEXT,
+    published_status TEXT NOT NULL,
+    route_id INTEGER,
+    assignment_type TEXT NOT NULL,
+    imported_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (team_member_id) REFERENCES team_members (id) ON DELETE SET NULL,
+    FOREIGN KEY (route_id) REFERENCES routes (id) ON DELETE SET NULL
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS homebase_shifts_shift_unique ON homebase_shifts (homebase_shift_id)",
+  "CREATE INDEX IF NOT EXISTS homebase_shifts_schedule_date_idx ON homebase_shifts (schedule_date)",
+  "CREATE INDEX IF NOT EXISTS homebase_shifts_user_idx ON homebase_shifts (homebase_user_id)",
+  "CREATE INDEX IF NOT EXISTS homebase_shifts_team_member_idx ON homebase_shifts (team_member_id)",
+  "CREATE INDEX IF NOT EXISTS homebase_shifts_route_idx ON homebase_shifts (route_id)",
+  `CREATE TABLE IF NOT EXISTS dro_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    operational_date TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    source_timestamp TEXT,
+    station_id TEXT NOT NULL,
+    service_area_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_message TEXT,
+    imported_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS dro_snapshots_operational_date_idx ON dro_snapshots (operational_date)",
+  "CREATE INDEX IF NOT EXISTS dro_snapshots_captured_at_idx ON dro_snapshots (captured_at)",
+  `CREATE TABLE IF NOT EXISTS dro_route_rows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    snapshot_id INTEGER NOT NULL,
+    route_id INTEGER,
+    route_number TEXT,
+    raw_wa_number TEXT NOT NULL,
+    display_wa_number TEXT,
+    delivery_cube REAL DEFAULT 0 NOT NULL,
+    pickup_cube REAL DEFAULT 0 NOT NULL,
+    combination_cube REAL DEFAULT 0 NOT NULL,
+    used_capacity REAL DEFAULT 0 NOT NULL,
+    vehicle_capacity REAL DEFAULT 0 NOT NULL,
+    delivery_packages INTEGER DEFAULT 0 NOT NULL,
+    pickup_packages INTEGER DEFAULT 0 NOT NULL,
+    combination_packages INTEGER DEFAULT 0 NOT NULL,
+    total_packages INTEGER DEFAULT 0 NOT NULL,
+    delivery_stops INTEGER DEFAULT 0 NOT NULL,
+    pickup_stops INTEGER DEFAULT 0 NOT NULL,
+    combination_stops INTEGER DEFAULT 0 NOT NULL,
+    total_stops INTEGER DEFAULT 0 NOT NULL,
+    route_type TEXT,
+    route_time TEXT,
+    distance REAL,
+    warning INTEGER DEFAULT 0 NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (snapshot_id) REFERENCES dro_snapshots (id) ON DELETE CASCADE,
+    FOREIGN KEY (route_id) REFERENCES routes (id) ON DELETE SET NULL
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS dro_route_rows_snapshot_wa_unique ON dro_route_rows (snapshot_id, raw_wa_number)",
+  "CREATE INDEX IF NOT EXISTS dro_route_rows_snapshot_idx ON dro_route_rows (snapshot_id)",
+  "CREATE INDEX IF NOT EXISTS dro_route_rows_route_idx ON dro_route_rows (route_id)",
   `CREATE TABLE IF NOT EXISTS schedule_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
     team_member_id INTEGER NOT NULL,
@@ -132,6 +234,16 @@ try {
       args: [routeNumber, "#087A46"],
     });
   }
+  await client.execute(`INSERT OR IGNORE INTO routes (route_number, color)
+    SELECT route_number, color FROM route_settings WHERE TRIM(route_number) <> ''`);
+  await client.execute(`INSERT OR IGNORE INTO routes (route_number)
+    SELECT DISTINCT TRIM(route_number) FROM vehicles WHERE route_number IS NOT NULL AND TRIM(route_number) <> ''`);
+  await client.execute(`INSERT OR IGNORE INTO routes (route_number)
+    SELECT DISTINCT TRIM(regular_route) FROM team_members WHERE regular_route IS NOT NULL AND TRIM(regular_route) <> ''`);
+  await client.execute(`INSERT OR IGNORE INTO routes (route_number)
+    SELECT DISTINCT TRIM(saturday_route) FROM team_members WHERE saturday_route IS NOT NULL AND TRIM(saturday_route) <> ''`);
+  await client.execute(`INSERT OR IGNORE INTO routes (route_number)
+    SELECT DISTINCT TRIM(sunday_route) FROM team_members WHERE sunday_route IS NOT NULL AND TRIM(sunday_route) <> ''`);
   const existingAdmin = await client.execute({ sql: "SELECT id FROM users WHERE email = ?", args: ["admin@admin.com"] });
   if (existingAdmin.rows.length === 0) {
     const phoneNumber = "(000) 000-0000";

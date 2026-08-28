@@ -13,3 +13,9 @@ const database = drizzle(client, { schema });
 export function getDb() {
   return database;
 }
+
+export async function closeDb() {
+  await client.close();
+}
+
+export type Database = typeof database;

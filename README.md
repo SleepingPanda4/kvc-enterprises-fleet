@@ -61,12 +61,10 @@ journalctl -u kvc-fleet -n 100 --no-pager
 The service listens on the LXC network interfaces. From another device on the
 same private network, open `http://10.10.10.105:3000`.
 
-The application itself does not yet have user authentication. Do not forward
-port 3000 through the router or otherwise expose it directly to the internet.
+The application requires an authenticated account for every operational page.
 `deploy/Caddyfile.example` configures Caddy to terminate HTTPS for
-`fleet.sleepingpandaind.com` and proxy to the local app. Restrict access while
-testing, then add Cloudflare Access or Caddy authentication before storing
-sensitive team information on the public site.
+`fleet.sleepingpandaind.com` and proxy to the local app. Keep port 3000 private;
+only Caddy should be exposed to the internet.
 
 ## Data and backups
 
@@ -119,3 +117,31 @@ To use a different server or SSH account:
 ```powershell
 .\deploy\deploy-to-lxc.ps1 -ServerAddress 10.10.10.105 -RemoteUser root
 ```
+
+## Homebase and DRO integration storage
+
+The migration creates a canonical `routes` registry while retaining the
+existing vehicle and team route columns for compatibility. Existing route
+settings, vehicle assignments, and regular/Saturday/Sunday team routes are
+backfilled automatically with `INSERT OR IGNORE`, so deployments are safe to
+repeat.
+
+Homebase collectors should call the service functions in
+`services/integrations/homebase.ts`. User and job mappings use permanent
+Homebase IDs, and shifts upsert by the unique Homebase shift ID. Assignment
+names and notes are retained verbatim while recognized route numbers are linked
+to the route registry.
+
+DRO collectors should call `createDroSnapshot` in
+`services/integrations/dro.ts`. Every collection creates a new parent snapshot
+and child route rows; previous operational-day snapshots are never replaced.
+Collector/browser automation and credentials intentionally remain outside this
+application layer.
+
+Authenticated read endpoints are available at:
+
+- `GET /api/routes` — route registry with current vehicle plus available driver
+  and latest DRO details
+- `GET /api/homebase/assignments` — tomorrow's assignments; add
+  `?date=YYYY-MM-DD` for a specific date
+- `GET /api/dro/latest` — latest snapshot and all of its route rows

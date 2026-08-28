@@ -43,6 +43,17 @@ test("local SQLite migration is repeatable and creates required indexes", async 
       created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
     )`);
+    await legacyClient.execute("INSERT INTO team_members (name, phone_number, regular_route) VALUES ('Legacy Driver', '5555550100', '777')");
+    await legacyClient.execute(`CREATE TABLE vehicles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+      number TEXT NOT NULL,
+      route_number TEXT,
+      make_model TEXT NOT NULL,
+      year INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
+    )`);
+    await legacyClient.execute("INSERT INTO vehicles (number, route_number, make_model) VALUES ('V-LEGACY', '888', 'Legacy Truck')");
     await legacyClient.close();
     await runMigration(databaseUrl);
     await runMigration(databaseUrl);
@@ -55,12 +66,21 @@ test("local SQLite migration is repeatable and creates required indexes", async 
       "vehicles",
       "vehicle_models",
       "route_settings",
+      "routes",
       "issues",
       "team_members",
+      "homebase_user_mappings",
+      "homebase_job_mappings",
+      "homebase_shifts",
+      "dro_snapshots",
+      "dro_route_rows",
       "vehicles_number_unique",
       "vehicles_route_number_unique",
       "vehicle_models_name_unique",
       "idx_issues_vehicle_status",
+      "routes_route_number_unique",
+      "homebase_shifts_shift_unique",
+      "dro_route_rows_snapshot_wa_unique",
     ]) assert.ok(names.has(name), `Missing ${name}`);
     const teamColumns = await client.execute("PRAGMA table_info(team_members)");
     assert.ok(
@@ -72,6 +92,15 @@ test("local SQLite migration is repeatable and creates required indexes", async 
     const routeSettings = await client.execute("SELECT route_number, color FROM route_settings ORDER BY route_number");
     assert.equal(routeSettings.rows.length, 18, "Expected every KVC route to have a color setting");
     assert.ok(routeSettings.rows.every(row => /^#[0-9A-F]{6}$/i.test(String(row.color))), "Route colors must use hex values");
+    const routeRows = await client.execute("SELECT route_number FROM routes ORDER BY route_number");
+    const registeredRoutes = new Set(routeRows.rows.map(row => String(row.route_number)));
+    assert.ok(registeredRoutes.has("777"), "Expected a legacy team route to be backfilled");
+    assert.ok(registeredRoutes.has("888"), "Expected a legacy vehicle route to be backfilled");
+    await assert.rejects(
+      () => client.execute("INSERT INTO routes (route_number) VALUES ('613')"),
+      /UNIQUE|constraint/i,
+      "Route numbers must remain unique",
+    );
     await client.close();
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
