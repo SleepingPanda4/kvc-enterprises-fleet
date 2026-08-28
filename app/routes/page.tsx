@@ -6,7 +6,10 @@ import { AppShell } from "../components/AppShell";
 import { routeColorPalette, routeTextColor } from "./config";
 
 type RouteRecord = {
+  id: number;
   routeNumber: string;
+  displayName: string | null;
+  description: string | null;
   color: string;
   vehicle: { id: number; number: string; makeModel: string } | null;
 };
@@ -16,6 +19,7 @@ export default function RoutesPage() {
   const canManage = user?.role === "Fleet Manager";
   const [routes, setRoutes] = useState<RouteRecord[]>([]);
   const [editTarget, setEditTarget] = useState<RouteRecord | null>(null);
+  const [addingRoute, setAddingRoute] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -37,15 +41,27 @@ export default function RoutesPage() {
     setEditTarget(null);
   }
 
+  function routeCreated(route: RouteRecord) {
+    setRoutes(current => [...current, route].sort((left, right) => {
+      const leftNumeric = /^\d+$/.test(left.routeNumber);
+      const rightNumeric = /^\d+$/.test(right.routeNumber);
+      if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+      return leftNumeric
+        ? Number(left.routeNumber) - Number(right.routeNumber)
+        : left.routeNumber.localeCompare(right.routeNumber);
+    }));
+    setAddingRoute(false);
+  }
+
   return <AppShell active="routes">
-    <header className="topbar"><div><p className="eyebrow">ROUTE OPERATIONS</p><h1>Routes</h1><p className="page-intro">View current vehicle assignments and choose a consistent color for each route.</p></div></header>
+    <header className="topbar"><div><p className="eyebrow">ROUTE OPERATIONS</p><h1>Routes</h1><p className="page-intro">View current vehicle assignments and choose a consistent color for each route.</p></div>{canManage && <div className="header-actions"><button type="button" className="primary" onClick={() => setAddingRoute(true)}>+ Add route</button></div>}</header>
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError("")} aria-label="Dismiss error">×</button></div>}
     <section className="fleet-card route-list-card">
-      <div className="fleet-head"><div><h2>Route list</h2><p>{canManage ? "Use Edit to choose from 30 common route colors." : "Route colors and current vehicle assignments."}</p></div></div>
+      <div className="fleet-head"><div><h2>Route list</h2><p>{canManage ? "Add routes or custom roles without assigning a vehicle." : "Route colors and current vehicle assignments."}</p></div></div>
       <div className="route-list" role="table" aria-label="KVC routes">
         <div className="route-list-head" role="row"><span role="columnheader">ROUTE</span><span role="columnheader">ASSIGNED VEHICLE</span><span role="columnheader">COLOR</span>{canManage && <span role="columnheader"><span className="sr-only">Actions</span></span>}</div>
         {loading ? <div className="empty">Loading routes…</div> : routes.map(route => <div className="route-list-row" role="row" key={route.routeNumber}>
-          <span role="cell"><strong className="route-number-badge" style={{ backgroundColor: route.color, color: routeTextColor(route.color) }}>{route.routeNumber}</strong></span>
+          <span role="cell" className="route-identity"><strong className="route-number-badge" style={{ backgroundColor: route.color, color: routeTextColor(route.color) }}>{route.routeNumber}</strong>{route.displayName && <small>{route.displayName}</small>}</span>
           <span role="cell">{route.vehicle ? <a className="route-vehicle-link" href={`/vehicles/${route.vehicle.id}`}><strong>Vehicle #{route.vehicle.number}</strong><small>{route.vehicle.makeModel}</small></a> : <span className="route-unassigned">Unassigned</span>}</span>
           <span role="cell" className="route-color-label"><i style={{ backgroundColor: route.color }} /><code>{route.color}</code></span>
           {canManage && <span role="cell"><button type="button" className="edit-row-btn" onClick={() => setEditTarget(route)} aria-label={`Edit color for route ${route.routeNumber}`}>✎</button></span>}
@@ -53,8 +69,60 @@ export default function RoutesPage() {
       </div>
       <footer className="table-foot"><span>{routes.length} routes</span><span>{canManage ? "Colors save immediately" : "Read-only access"}</span></footer>
     </section>
+    {canManage && addingRoute && <AddRouteModal onClose={() => setAddingRoute(false)} onCreated={routeCreated} />}
     {canManage && editTarget && <RouteColorModal route={editTarget} onClose={() => setEditTarget(null)} onSaved={colorSaved} />}
   </AppShell>;
+}
+
+function AddRouteModal({ onClose, onCreated }: { onClose: () => void; onCreated: (route: RouteRecord) => void }) {
+  const [routeNumber, setRouteNumber] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [description, setDescription] = useState("");
+  const [selectedColor, setSelectedColor] = useState<string>(routeColorPalette[5]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function save() {
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch("/api/routes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ routeNumber, displayName, description, color: selectedColor }),
+      });
+      const body = await response.json();
+      if (response.ok) onCreated(body.route);
+      else setError(`${body.error || "Route could not be added."}${body.code ? ` (${body.code})` : ""}`);
+    } catch {
+      setError("Could not connect to route data.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <div className="modal-backdrop">
+    <button type="button" className="modal-backdrop-dismiss" onClick={onClose} aria-label="Close dialog" />
+    <section className="modal route-color-modal" role="dialog" aria-modal="true" aria-labelledby="add-route-title">
+      <button className="modal-close" onClick={onClose} aria-label="Close">×</button>
+      <p className="eyebrow">ROUTE OPERATIONS</p>
+      <h2 id="add-route-title">Add a route or custom role</h2>
+      <p>A vehicle is optional. The new entry will remain in this list even when it is unassigned.</p>
+      <div className="form-grid">
+        <label>Route number or custom role<input autoComplete="off" maxLength={40} value={routeNumber} onChange={event => setRouteNumber(event.target.value)} placeholder="e.g. 646 or JUMPER" /></label>
+        <label>Display name <span className="field-hint">Optional</span><input autoComplete="off" maxLength={80} value={displayName} onChange={event => setDisplayName(event.target.value)} placeholder="e.g. Overflow" /></label>
+        <label className="wide">Description <span className="field-hint">Optional</span><textarea autoComplete="off" maxLength={240} rows={3} value={description} onChange={event => setDescription(event.target.value)} placeholder="Add any helpful details about this route or role." /></label>
+        <div className="wide">
+          <span className="route-color-field-label">Color</span>
+          <div className="route-color-picker" role="group" aria-label="Color for new route">
+            {routeColorPalette.map(color => <button type="button" key={color} className={selectedColor === color ? "selected" : ""} style={{ backgroundColor: color }} onClick={() => setSelectedColor(color)} aria-label={`Select ${color}`} aria-pressed={selectedColor === color}>{selectedColor === color && <span>✓</span>}</button>)}
+          </div>
+        </div>
+      </div>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="form-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button type="button" className="primary" disabled={saving || !routeNumber.trim()} onClick={() => void save()}>{saving ? "Adding…" : "Add route"}</button></div>
+    </section>
+  </div>;
 }
 
 function RouteColorModal({ route, onClose, onSaved }: { route: RouteRecord; onClose: () => void; onSaved: (routeNumber: string, color: string) => void }) {

@@ -96,6 +96,10 @@ test("local SQLite migration is repeatable and creates required indexes", async 
     const registeredRoutes = new Set(routeRows.rows.map(row => String(row.route_number)));
     assert.ok(registeredRoutes.has("777"), "Expected a legacy team route to be backfilled");
     assert.ok(registeredRoutes.has("888"), "Expected a legacy vehicle route to be backfilled");
+    await client.execute("INSERT INTO routes (route_number, display_name, color) VALUES ('JUMPER', 'Custom role', '#16A34A')");
+    const customRole = await client.execute("SELECT route_number, display_name FROM routes WHERE route_number = 'JUMPER'");
+    assert.equal(customRole.rows.length, 1, "Standalone custom roles must not require a vehicle assignment");
+    assert.equal(customRole.rows[0].display_name, "Custom role");
     await assert.rejects(
       () => client.execute("INSERT INTO routes (route_number) VALUES ('613')"),
       /UNIQUE|constraint/i,
