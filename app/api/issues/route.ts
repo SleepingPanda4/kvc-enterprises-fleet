@@ -1,0 +1,4 @@
+import { getDb } from "../../../db";
+import { issues } from "../../../db/schema";
+import { requireManager } from "../../auth/server";
+export async function POST(request: Request) { const auth = await requireManager(request); if (auth instanceof Response) return auth; try { const payload = await request.json() as Record<string,string>; const vehicleId = Number(payload.vehicleId), notes = payload.notes?.trim(), type = payload.type === "Other" ? payload.customType?.trim() : payload.type; if (!vehicleId || !notes || !type) return Response.json({ error: "Vehicle, type, and notes are required" }, { status: 400 }); const [row] = await getDb().insert(issues).values({ vehicleId, type, notes }).returning(); return Response.json({ issue: row }, { status: 201 }); } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Could not report issue" }, { status: 500 }); } }
