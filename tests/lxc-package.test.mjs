@@ -27,6 +27,7 @@ test("package emits a standalone Node server", async () => {
   assert.equal(packageJson.scripts.start, "node dist/standalone/server.js");
   assert.equal(packageJson.scripts["db:migrate"], "node scripts/migrate.mjs");
   assert.match(serviceFile, /^EnvironmentFile=-\/etc\/kvc-fleet\/dro\.env$/m);
+  assert.match(serviceFile, /^EnvironmentFile=-\/etc\/kvc-fleet\/homebase\.env$/m);
 });
 
 test("local SQLite migration is repeatable and creates required indexes", async () => {
@@ -74,6 +75,7 @@ test("local SQLite migration is repeatable and creates required indexes", async 
       "homebase_user_mappings",
       "homebase_job_mappings",
       "homebase_shifts",
+      "daily_assignments",
       "dro_snapshots",
       "dro_route_rows",
       "vehicles_number_unique",
@@ -82,9 +84,15 @@ test("local SQLite migration is repeatable and creates required indexes", async 
       "idx_issues_vehicle_status",
       "routes_route_number_unique",
       "homebase_shifts_shift_unique",
+      "daily_assignments_date_member_unique",
+      "daily_assignments_date_route_unique",
       "dro_route_rows_snapshot_wa_unique",
       "dro_snapshots_operational_date_captured_at_idx",
     ]) assert.ok(names.has(name), `Missing ${name}`);
+    const homebaseShiftColumns = await client.execute("PRAGMA table_info(homebase_shifts)");
+    for (const column of ["employee_first_name", "employee_last_name", "confidence"]) {
+      assert.ok(homebaseShiftColumns.rows.some(row => String(row.name) === column), `Missing homebase_shifts.${column}`);
+    }
     const teamColumns = await client.execute("PRAGMA table_info(team_members)");
     assert.ok(
       teamColumns.rows.some(row => String(row.name) === "availability_days"),

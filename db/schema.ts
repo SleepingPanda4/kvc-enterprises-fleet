@@ -96,6 +96,8 @@ export const homebaseShifts = sqliteTable("homebase_shifts", {
   homebaseJobId: text("homebase_job_id").notNull(),
   teamMemberId: integer("team_member_id").references(() => teamMembers.id, { onDelete: "set null" }),
   employeeDisplayName: text("employee_display_name").notNull(),
+  employeeFirstName: text("employee_first_name"),
+  employeeLastName: text("employee_last_name"),
   scheduleDate: text("schedule_date").notNull(),
   startTimestamp: text("start_timestamp").notNull(),
   endTimestamp: text("end_timestamp").notNull(),
@@ -104,6 +106,7 @@ export const homebaseShifts = sqliteTable("homebase_shifts", {
   publishedStatus: text("published_status").notNull(),
   routeId: integer("route_id").references(() => routes.id, { onDelete: "set null" }),
   assignmentType: text("assignment_type").notNull(),
+  confidence: text("confidence"),
   importedAt: text("imported_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, table => [
@@ -112,6 +115,26 @@ export const homebaseShifts = sqliteTable("homebase_shifts", {
   index("homebase_shifts_user_idx").on(table.homebaseUserId),
   index("homebase_shifts_team_member_idx").on(table.teamMemberId),
   index("homebase_shifts_route_idx").on(table.routeId),
+]);
+
+export const dailyAssignments = sqliteTable("daily_assignments", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  operationalDate: text("operational_date").notNull(),
+  teamMemberId: integer("team_member_id").notNull().references(() => teamMembers.id, { onDelete: "cascade" }),
+  destinationType: text("destination_type", { enum: ["route", "special", "unassigned"] }).notNull(),
+  routeId: integer("route_id").references(() => routes.id, { onDelete: "set null" }),
+  specialAssignment: text("special_assignment"),
+  source: text("source", { enum: ["homebase", "manual"] }).notNull().default("homebase"),
+  homebaseShiftId: integer("homebase_shift_id").references(() => homebaseShifts.id, { onDelete: "set null" }),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, table => [
+  uniqueIndex("daily_assignments_date_member_unique").on(table.operationalDate, table.teamMemberId),
+  uniqueIndex("daily_assignments_date_route_unique")
+    .on(table.operationalDate, table.routeId)
+    .where(sql`${table.destinationType} = 'route' AND ${table.routeId} IS NOT NULL`),
+  index("daily_assignments_date_type_idx").on(table.operationalDate, table.destinationType),
+  index("daily_assignments_homebase_shift_idx").on(table.homebaseShiftId),
 ]);
 
 export const droSnapshots = sqliteTable("dro_snapshots", {

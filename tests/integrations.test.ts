@@ -31,7 +31,7 @@ function runMigration(databaseUrl: string) {
 test("Homebase assignment parser identifies routes and special work", () => {
   assert.deepEqual(parseHomebaseAssignment("614 CITY"), { routeNumber: "614", assignmentType: "route", specialType: null });
   assert.deepEqual(parseHomebaseAssignment("STRAIGHT TRUCK 1127"), { routeNumber: "1127", assignmentType: "route", specialType: null });
-  for (const special of ["BC", "TRAINING", "MISSED", "MISC TASK"]) {
+  for (const special of ["BC", "TBD ROUTE", "ON CALL AT HOME", "TRAINING", "MISSED", "MISC TASK"]) {
     const parsed = parseHomebaseAssignment(special);
     assert.equal(parsed.routeNumber, null);
     assert.equal(parsed.assignmentType, "special");
@@ -207,6 +207,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
   const databasePath = path.join(temporaryDirectory, "fleet.db");
   const databaseUrl = `file:${databasePath.replaceAll("\\", "/")}`;
   process.env.DATABASE_URL = databaseUrl;
+  let integrationClient: ReturnType<typeof createClient> | null = null;
 
   try {
     await runMigration(databaseUrl);
@@ -223,6 +224,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     const { closeDb } = await import("../db/index");
 
     const client = createClient({ url: databaseUrl });
+    integrationClient = client;
     const admin = await client.execute("SELECT id FROM team_members WHERE email = 'admin@admin.com'");
     const adminTeamMemberId = Number(admin.rows[0].id);
     await upsertHomebaseUserMapping({ userId: "user-20", teamMemberId: adminTeamMemberId, displayName: "Lincoln Barker" });
@@ -465,11 +467,208 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     } finally {
       globalThis.fetch = originalFetch;
     }
+
+    const rosterNames = [
+      "Joshua Gallagher", "Jay Jones", "Michael Dahl", "Davion Sanderson", "Dennis Davis", "Erik Colon",
+      "Phillip Trapp", "Brandon Vickers", "Andrew Kite", "Trent Unknown", "Sarah Example", "Zoe Example",
+    ];
+    const rosterIds = new Map<string, number>();
+    for (const [index, name] of rosterNames.entries()) {
+      const inserted = await client.execute({
+        sql: "INSERT INTO team_members (name, phone_number, availability_days) VALUES (?, ?, '[]')",
+        args: [name, `(555) 700-${String(1000 + index).slice(-4)}`],
+      });
+      rosterIds.set(name, Number(inserted.lastInsertRowid));
+    }
+
+    const homebasePayload = {
+      rangeStart: "2026-10-05",
+      rangeEnd: "2026-10-11",
+      collectedAt: "2026-10-04T23:00:00.000Z",
+      shifts: [
+        ["hb-josh-05", "hb-josh", "2026-10-05", "JOSHUA GALLAGHER", "621", "621", "route"],
+        ["hb-jay-05", "hb-jay", "2026-10-05", "JAY JONES", "TBD ROUTE", null, "special"],
+        ["hb-michael-05", "hb-michael", "2026-10-05", "MICHAEL DAHL", "TBD ROUTE", null, "special"],
+        ["hb-davion-05", "hb-davion", "2026-10-05", "DAVION SANDERSON", "625", "625", "route"],
+        ["hb-dennis-05", "hb-dennis", "2026-10-05", "DENNIS DAVIS", "ON CALL AT HOME", null, "special"],
+        ["hb-erik-05", "hb-erik", "2026-10-05", "ERIK COLON", "ON CALL AT HOME", null, "special"],
+        ["hb-phillip-05", "hb-phillip", "2026-10-05", "PHILLIP TRAPP", "BC", null, "special"],
+        ["hb-brandon-05", "hb-brandon", "2026-10-05", "BRANDON VICKERS", "BC", null, "special"],
+        ["hb-andrew-05", "hb-andrew", "2026-10-05", "ANDREW KITE", "622", "622", "route"],
+        ["hb-trent-05", "hb-trent", "2026-10-05", "TRENT UNKNOWN", "MISSED", null, "special"],
+        ["hb-unmatched-05", "hb-unmatched", "2026-10-05", "UNMATCHED PERSON", "BC", null, "special"],
+        ["hb-josh-06", "hb-josh", "2026-10-06", "JOSHUA GALLAGHER", "630", "630", "route"],
+      ].map(([homebaseShiftId, homebaseUserId, date, employee, assignment, route, type], index) => ({
+        homebaseShiftId,
+        homebaseUserId,
+        date,
+        employee,
+        firstName: String(employee).split(" ")[0],
+        lastName: String(employee).split(" ").at(-1),
+        startAt: `${date}T13:00:00.000Z`,
+        endAt: `${date}T22:00:00.000Z`,
+        assignment,
+        route,
+        type,
+        confidence: "high",
+        note: index === 0 ? "Original note" : null,
+        publishedStatus: "published",
+      })),
+    };
+    process.env.HOMEBASE_INGEST_TOKEN = "homebase-server-test-token";
+    const { POST: ingestHomebaseSchedule } = await import("../app/api/internal/homebase/schedule/route");
+    function homebaseRequest(body: unknown, token?: string) {
+      const headers = new Headers({ "Content-Type": "application/json" });
+      if (token) headers.set("Authorization", `Bearer ${token}`);
+      return new Request("http://localhost/api/internal/homebase/schedule", { method: "POST", headers, body: JSON.stringify(body) });
+    }
+
+    const missingHomebaseToken = await ingestHomebaseSchedule(homebaseRequest(homebasePayload));
+    assert.equal(missingHomebaseToken.status, 401);
+    const wrongHomebaseToken = await ingestHomebaseSchedule(homebaseRequest(homebasePayload, "wrong-homebase-token"));
+    assert.equal(wrongHomebaseToken.status, 401);
+    assert.equal(JSON.stringify(await wrongHomebaseToken.json()).includes("homebase-server-test-token"), false, "Homebase token must never appear in errors");
+    assert.equal((await ingestHomebaseSchedule(homebaseRequest({ ...homebasePayload, rangeStart: "not-a-date" }, "homebase-server-test-token"))).status, 400);
+
+    const firstHomebaseImport = await ingestHomebaseSchedule(homebaseRequest(homebasePayload, "homebase-server-test-token"));
+    assert.equal(firstHomebaseImport.status, 200);
+    assert.deepEqual(await firstHomebaseImport.json(), {
+      imported: 12, updated: 0, unchanged: 0, removed: 0,
+      dates: ["2026-10-05", "2026-10-06"], routeAssignments: 4, specialAssignments: 8,
+    });
+    const repeatedHomebaseImport = await ingestHomebaseSchedule(homebaseRequest(homebasePayload, "homebase-server-test-token"));
+    assert.deepEqual(await repeatedHomebaseImport.json(), {
+      imported: 0, updated: 0, unchanged: 12, removed: 0,
+      dates: ["2026-10-05", "2026-10-06"], routeAssignments: 4, specialAssignments: 8,
+    }, "Repeating a full weekly import must be idempotent");
+    const importedShiftCount = await client.execute("SELECT COUNT(*) AS count FROM homebase_shifts WHERE schedule_date BETWEEN '2026-10-05' AND '2026-10-11'");
+    assert.equal(Number(importedShiftCount.rows[0].count), 12);
+
+    const noteUpdatedPayload = {
+      ...homebasePayload,
+      collectedAt: "2026-10-04T23:30:00.000Z",
+      shifts: homebasePayload.shifts.map((shift, index) => index === 0 ? { ...shift, note: "Updated source note" } : shift),
+    };
+    const updatedHomebaseImport = await ingestHomebaseSchedule(homebaseRequest(noteUpdatedPayload, "homebase-server-test-token"));
+    const updatedHomebaseSummary = await updatedHomebaseImport.json() as Record<string, unknown>;
+    assert.equal(updatedHomebaseSummary.updated, 1);
+    assert.equal(updatedHomebaseSummary.unchanged, 11);
+    const updatedSource = await client.execute("SELECT raw_note FROM homebase_shifts WHERE homebase_shift_id = 'hb-josh-05'");
+    assert.equal(updatedSource.rows[0].raw_note, "Updated source note");
+
+    const {
+      getDailyAssignmentBoard,
+      resetDailyAssignmentsToHomebase,
+      restoreMemberToHomebase,
+      swapDailyAssignment,
+    } = await import("../services/integrations/daily-assignments");
+    const assignmentFor = (board: Awaited<ReturnType<typeof getDailyAssignmentBoard>>, name: string) => {
+      const member = board.members.find(item => item.name === name);
+      assert.ok(member, `Missing assignment member ${name}`);
+      return member;
+    };
+    let board = await getDailyAssignmentBoard("2026-10-05");
+    assert.equal(assignmentFor(board, "Joshua Gallagher").assignmentLabel, "621", "Routes join to assignments by operational date and route");
+    assert.equal(board.members.filter(member => member.assignmentLabel === "TBD ROUTE").length, 2);
+    assert.equal(board.members.filter(member => member.assignmentLabel === "BC").length, 2);
+    assert.equal(board.members.filter(member => member.assignmentLabel === "ON CALL AT HOME").length, 2);
+    assert.equal(assignmentFor(board, "Trent Unknown").assignmentLabel, "MISSED", "Unknown Homebase special assignments are retained");
+    assert.equal(board.unmatchedHomebase.length, 1, "Unmatched Homebase users remain safe source records");
+    assert.equal(board.unmatchedHomebase[0].employeeDisplayName, "UNMATCHED PERSON");
+
+    const boardWithoutHomebase = await getDailyAssignmentBoard("2026-10-11");
+    assert.equal(boardWithoutHomebase.hasHomebaseData, false);
+    assert.ok(boardWithoutHomebase.members.every(member => member.assignmentLabel === "Unassigned"), "DRO staffing remains usable without Homebase data");
+    const historicalBoard = await getDailyAssignmentBoard("2026-10-06");
+    assert.equal(assignmentFor(historicalBoard, "Joshua Gallagher").assignmentLabel, "630", "Historical dates retain independent boards");
+
+    const staffingSnapshotOne = await createDroSnapshot({
+      operationalDate: "2026-10-05", capturedAt: "2026-10-05T20:00:00.000Z", stationId: "631", serviceAreaId: "2994532", status: "success",
+      rows: [{ routeNumber: "621", rawWaNumber: "WA-STAFF-1", deliveryCube: 100, vehicleCapacity: 600 }],
+    });
+    const staffingSnapshotTwo = await createDroSnapshot({
+      operationalDate: "2026-10-05", capturedAt: "2026-10-05T21:00:00.000Z", stationId: "631", serviceAreaId: "2994532", status: "success",
+      rows: [{ routeNumber: "621", rawWaNumber: "WA-STAFF-2", deliveryCube: 120, vehicleCapacity: 600 }],
+    });
+    assert.notEqual(staffingSnapshotOne.id, staffingSnapshotTwo.id);
+    assert.equal(assignmentFor(await getDailyAssignmentBoard("2026-10-05"), "Joshua Gallagher").assignmentLabel, "621", "Snapshot changes do not change the date staffing board");
+    const immutableDroBefore = await client.execute({ sql: "SELECT captured_at FROM dro_snapshots WHERE id = ?", args: [staffingSnapshotOne.id] });
+
+    board = await swapDailyAssignment({ operationalDate: "2026-10-05", destination: { type: "route", routeNumber: "621" }, replacementTeamMemberId: rosterIds.get("Jay Jones") as number });
+    assert.equal(assignmentFor(board, "Jay Jones").assignmentLabel, "621");
+    assert.equal(assignmentFor(board, "Joshua Gallagher").assignmentLabel, "TBD ROUTE");
+    assert.equal(assignmentFor(board, "Michael Dahl").assignmentLabel, "TBD ROUTE", "Other people in a multi-person bucket remain untouched");
+
+    board = await swapDailyAssignment({ operationalDate: "2026-10-05", destination: { type: "route", routeNumber: "625" }, replacementTeamMemberId: rosterIds.get("Dennis Davis") as number });
+    assert.equal(assignmentFor(board, "Dennis Davis").assignmentLabel, "625");
+    assert.equal(assignmentFor(board, "Davion Sanderson").assignmentLabel, "ON CALL AT HOME");
+    assert.equal(assignmentFor(board, "Erik Colon").assignmentLabel, "ON CALL AT HOME");
+
+    board = await swapDailyAssignment({ operationalDate: "2026-10-05", destination: { type: "route", routeNumber: "625" }, replacementTeamMemberId: rosterIds.get("Phillip Trapp") as number });
+    assert.equal(assignmentFor(board, "Phillip Trapp").assignmentLabel, "625");
+    assert.equal(assignmentFor(board, "Dennis Davis").assignmentLabel, "BC");
+    assert.equal(assignmentFor(board, "Brandon Vickers").assignmentLabel, "BC");
+
+    board = await swapDailyAssignment({ operationalDate: "2026-10-05", destination: { type: "route", routeNumber: "621" }, replacementTeamMemberId: rosterIds.get("Andrew Kite") as number });
+    assert.equal(assignmentFor(board, "Andrew Kite").assignmentLabel, "621");
+    assert.equal(assignmentFor(board, "Jay Jones").assignmentLabel, "622", "Route-to-route selection performs a true swap");
+
+    board = await swapDailyAssignment({ operationalDate: "2026-10-05", destination: { type: "route", routeNumber: "621" }, replacementTeamMemberId: rosterIds.get("Sarah Example") as number });
+    assert.equal(assignmentFor(board, "Sarah Example").assignmentLabel, "621");
+    assert.equal(assignmentFor(board, "Andrew Kite").assignmentLabel, "Unassigned");
+    assert.ok(board.members.filter(member => member.assignmentLabel === "Unassigned").length >= 2, "UNASSIGNED supports multiple Team members");
+
+    const duplicateMembers = await client.execute("SELECT team_member_id, COUNT(*) AS count FROM daily_assignments WHERE operational_date = '2026-10-05' GROUP BY team_member_id HAVING COUNT(*) > 1");
+    const duplicateRoutes = await client.execute("SELECT route_id, COUNT(*) AS count FROM daily_assignments WHERE operational_date = '2026-10-05' AND destination_type = 'route' GROUP BY route_id HAVING COUNT(*) > 1");
+    assert.equal(duplicateMembers.rows.length, 0, "A Team member cannot occupy two assignments for one date");
+    assert.equal(duplicateRoutes.rows.length, 0, "A route cannot have two current occupants");
+
+    board = await restoreMemberToHomebase("2026-10-05", rosterIds.get("Joshua Gallagher") as number);
+    assert.equal(assignmentFor(board, "Joshua Gallagher").assignmentLabel, "621", "A single person can be restored to their Homebase assignment");
+    assert.equal(assignmentFor(board, "Sarah Example").assignmentLabel, "TBD ROUTE", "Per-person restore swaps the displaced person safely");
+
+    await Promise.all([
+      swapDailyAssignment({ operationalDate: "2026-10-05", destination: { type: "route", routeNumber: "622" }, replacementTeamMemberId: rosterIds.get("Andrew Kite") as number }),
+      swapDailyAssignment({ operationalDate: "2026-10-05", destination: { type: "route", routeNumber: "622" }, replacementTeamMemberId: rosterIds.get("Sarah Example") as number }),
+    ]);
+    board = await getDailyAssignmentBoard("2026-10-05");
+    assert.equal(assignmentFor(board, "Sarah Example").assignmentLabel, "622", "Concurrent swaps are serialized without losing the final request");
+    const concurrentDuplicateMembers = await client.execute("SELECT team_member_id, COUNT(*) AS count FROM daily_assignments WHERE operational_date = '2026-10-05' GROUP BY team_member_id HAVING COUNT(*) > 1");
+    const concurrentDuplicateRoutes = await client.execute("SELECT route_id, COUNT(*) AS count FROM daily_assignments WHERE operational_date = '2026-10-05' AND destination_type = 'route' GROUP BY route_id HAVING COUNT(*) > 1");
+    assert.equal(concurrentDuplicateMembers.rows.length, 0, "Concurrent swaps preserve one assignment per Team member");
+    assert.equal(concurrentDuplicateRoutes.rows.length, 0, "Concurrent swaps preserve one occupant per route");
+
+    const boardBeforeRefresh = board.members.map(member => ({ name: member.name, assignment: member.assignmentLabel }));
+    const manualPreservingRefresh = {
+      ...noteUpdatedPayload,
+      collectedAt: "2026-10-05T00:30:00.000Z",
+      shifts: noteUpdatedPayload.shifts.map((shift, index) => index === 1 ? { ...shift, note: "Homebase changed after manual swaps" } : shift),
+    };
+    await ingestHomebaseSchedule(homebaseRequest(manualPreservingRefresh, "homebase-server-test-token"));
+    board = await getDailyAssignmentBoard("2026-10-05");
+    assert.deepEqual(board.members.map(member => ({ name: member.name, assignment: member.assignmentLabel })), boardBeforeRefresh, "Manual overrides survive Homebase re-import");
+    const immutableDroAfter = await client.execute({ sql: "SELECT captured_at FROM dro_snapshots WHERE id = ?", args: [staffingSnapshotOne.id] });
+    assert.deepEqual(immutableDroAfter.rows, immutableDroBefore.rows, "Homebase ingestion never mutates immutable DRO snapshots");
+
+    board = await resetDailyAssignmentsToHomebase("2026-10-05");
+    assert.equal(board.hasManualChanges, false);
+    assert.equal(assignmentFor(board, "Joshua Gallagher").assignmentLabel, "621");
+    assert.equal(assignmentFor(board, "Jay Jones").assignmentLabel, "TBD ROUTE");
+    assert.equal(assignmentFor(board, "Davion Sanderson").assignmentLabel, "625");
+    assert.equal(assignmentFor(board, "Phillip Trapp").assignmentLabel, "BC");
+
     await client.close();
+    integrationClient = null;
     await closeDb();
   } finally {
     delete process.env.DATABASE_URL;
     delete process.env.DRO_INGEST_TOKEN;
+    delete process.env.HOMEBASE_INGEST_TOKEN;
+    if (integrationClient) {
+      try { await integrationClient.close(); } catch { /* best-effort test cleanup */ }
+    }
+    const { closeDb: closeApplicationDb } = await import("../db/index");
+    await closeApplicationDb().catch(() => undefined);
     await rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

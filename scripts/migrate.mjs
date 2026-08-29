@@ -108,6 +108,8 @@ const statements = [
     homebase_job_id TEXT NOT NULL,
     team_member_id INTEGER,
     employee_display_name TEXT NOT NULL,
+    employee_first_name TEXT,
+    employee_last_name TEXT,
     schedule_date TEXT NOT NULL,
     start_timestamp TEXT NOT NULL,
     end_timestamp TEXT NOT NULL,
@@ -116,6 +118,7 @@ const statements = [
     published_status TEXT NOT NULL,
     route_id INTEGER,
     assignment_type TEXT NOT NULL,
+    confidence TEXT,
     imported_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
     FOREIGN KEY (team_member_id) REFERENCES team_members (id) ON DELETE SET NULL,
@@ -126,6 +129,27 @@ const statements = [
   "CREATE INDEX IF NOT EXISTS homebase_shifts_user_idx ON homebase_shifts (homebase_user_id)",
   "CREATE INDEX IF NOT EXISTS homebase_shifts_team_member_idx ON homebase_shifts (team_member_id)",
   "CREATE INDEX IF NOT EXISTS homebase_shifts_route_idx ON homebase_shifts (route_id)",
+  `CREATE TABLE IF NOT EXISTS daily_assignments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    operational_date TEXT NOT NULL,
+    team_member_id INTEGER NOT NULL,
+    destination_type TEXT NOT NULL,
+    route_id INTEGER,
+    special_assignment TEXT,
+    source TEXT DEFAULT 'homebase' NOT NULL,
+    homebase_shift_id INTEGER,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (team_member_id) REFERENCES team_members (id) ON DELETE CASCADE,
+    FOREIGN KEY (route_id) REFERENCES routes (id) ON DELETE SET NULL,
+    FOREIGN KEY (homebase_shift_id) REFERENCES homebase_shifts (id) ON DELETE SET NULL
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS daily_assignments_date_member_unique ON daily_assignments (operational_date, team_member_id)",
+  `CREATE UNIQUE INDEX IF NOT EXISTS daily_assignments_date_route_unique
+    ON daily_assignments (operational_date, route_id)
+    WHERE destination_type = 'route' AND route_id IS NOT NULL`,
+  "CREATE INDEX IF NOT EXISTS daily_assignments_date_type_idx ON daily_assignments (operational_date, destination_type)",
+  "CREATE INDEX IF NOT EXISTS daily_assignments_homebase_shift_idx ON daily_assignments (homebase_shift_id)",
   `CREATE TABLE IF NOT EXISTS dro_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
     operational_date TEXT NOT NULL,
@@ -228,6 +252,16 @@ try {
   const scheduleColumns = await client.execute("PRAGMA table_info(schedule_entries)");
   if (!scheduleColumns.rows.some(row => String(row.name) === "notes")) {
     await client.execute("ALTER TABLE schedule_entries ADD COLUMN notes TEXT");
+  }
+  const homebaseShiftColumns = await client.execute("PRAGMA table_info(homebase_shifts)");
+  for (const [name, definition] of [
+    ["employee_first_name", "TEXT"],
+    ["employee_last_name", "TEXT"],
+    ["confidence", "TEXT"],
+  ]) {
+    if (!homebaseShiftColumns.rows.some(row => String(row.name) === name)) {
+      await client.execute(`ALTER TABLE homebase_shifts ADD COLUMN ${name} ${definition}`);
+    }
   }
   for (const routeNumber of routeNumbers) {
     await client.execute({

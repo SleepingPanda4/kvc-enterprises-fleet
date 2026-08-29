@@ -1,18 +1,7 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import { createDroSnapshot, type DroRouteInput, type DroSnapshotInput } from "../../../../../services/integrations/dro";
+import { validInternalBearer } from "../../bearer";
 
 class PayloadError extends Error {}
-
-function authorized(request: Request) {
-  const expectedToken = process.env.DRO_INGEST_TOKEN;
-  const authorization = request.headers.get("authorization");
-  if (!expectedToken || !authorization?.startsWith("Bearer ")) return false;
-
-  const providedToken = authorization.slice("Bearer ".length);
-  const expectedDigest = createHash("sha256").update(expectedToken).digest();
-  const providedDigest = createHash("sha256").update(providedToken).digest();
-  return timingSafeEqual(expectedDigest, providedDigest);
-}
 
 function object(value: unknown, field: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new PayloadError(`${field} must be an object.`);
@@ -108,7 +97,7 @@ export function parseDroSnapshotPayload(value: unknown): DroSnapshotInput {
 }
 
 export async function POST(request: Request) {
-  if (!authorized(request)) {
+  if (!validInternalBearer(request, process.env.DRO_INGEST_TOKEN)) {
     return Response.json({ error: "Valid ingestion credentials are required.", code: "DRO_INGEST_UNAUTHORIZED" }, { status: 401 });
   }
 

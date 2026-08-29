@@ -1,4 +1,4 @@
-const specialAssignments = ["BC", "TRAINING", "MISSED", "MISC TASK"] as const;
+const specialAssignments = ["BC", "TBD ROUTE", "ON CALL AT HOME", "TRAINING", "MISSED", "MISC TASK"] as const;
 
 export type ParsedHomebaseAssignment = {
   routeNumber: string | null;

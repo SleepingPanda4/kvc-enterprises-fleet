@@ -126,17 +126,66 @@ settings, vehicle assignments, and regular/Saturday/Sunday team routes are
 backfilled automatically with `INSERT OR IGNORE`, so deployments are safe to
 repeat.
 
-Homebase collectors should call the service functions in
-`services/integrations/homebase.ts`. User and job mappings use permanent
-Homebase IDs, and shifts upsert by the unique Homebase shift ID. Assignment
-names and notes are retained verbatim while recognized route numbers are linked
-to the route registry.
+The external Homebase collector submits a complete collected range to
+`POST /api/internal/homebase/schedule`. Fleet Manager identifies people with
+stable Homebase user IDs, initially auto-matches an exact normalized Team name,
+and persists that mapping. Shifts upsert by Homebase shift ID, and shifts that
+disappear from a later complete range are reconciled without deleting manual
+Fleet assignment overrides.
 
-DRO collectors should call `createDroSnapshot` in
-`services/integrations/dro.ts`. Every collection creates a new parent snapshot
-and child route rows; previous operational-day snapshots are never replaced.
-Collector/browser automation and credentials intentionally remain outside this
-application layer.
+The endpoint requires `Authorization: Bearer <token>` matching
+`HOMEBASE_INGEST_TOKEN`. Store it in `/etc/kvc-fleet/homebase.env`; never place
+the token, Homebase credentials, cookies, or browser profiles in this repository.
+Recommended permissions are:
+
+```bash
+install -d -o root -g kvcfleet -m 0750 /etc/kvc-fleet
+printf '%s\n' 'HOMEBASE_INGEST_TOKEN=replace-with-a-long-random-token' \
+  > /etc/kvc-fleet/homebase.env
+chown root:kvcfleet /etc/kvc-fleet/homebase.env
+chmod 0640 /etc/kvc-fleet/homebase.env
+systemctl restart kvc-fleet
+```
+
+Safe example request body:
+
+```json
+{
+  "rangeStart": "2026-08-24",
+  "rangeEnd": "2026-08-30",
+  "collectedAt": "2026-08-23T23:15:00.000Z",
+  "shifts": [
+    {
+      "homebaseShiftId": "fake-shift-1001",
+      "homebaseUserId": "fake-user-2001",
+      "homebaseJobId": "fake-job-621",
+      "date": "2026-08-29",
+      "employee": "JOSHUA EXAMPLE",
+      "firstName": "JOSHUA",
+      "lastName": "EXAMPLE",
+      "startAt": "2026-08-29T13:00:00.000Z",
+      "endAt": "2026-08-29T22:00:00.000Z",
+      "assignment": "621",
+      "route": "621",
+      "type": "route",
+      "confidence": "high",
+      "note": "Safe fake example",
+      "publishedStatus": "published"
+    }
+  ]
+}
+```
+
+`homebaseJobId`, `firstName`, `lastName`, `route`, `type`, `confidence`, `note`,
+and `publishedStatus` are optional. Stable shift/user IDs, date, employee,
+timestamps, and raw assignment are required. A successful response reports
+`imported`, `updated`, `unchanged`, `removed`, `dates`, `routeAssignments`, and
+`specialAssignments`.
+
+DRO collectors use the existing authenticated snapshot endpoint. Snapshots stay
+immutable; the existing after-11-PM deduplication may reuse the newest identical
+snapshot rather than creating duplicate database rows. Collector/browser
+automation and credentials intentionally remain outside this application layer.
 
 The external Playwright/PurpleID collector is not stored in this repository.
 Configure that collector to run at `20:00`, `20:30`, `21:00`, `21:30`, `22:00`,
@@ -175,5 +224,10 @@ Authenticated read endpoints are available at:
 - `GET /api/dro/date?date=YYYY-MM-DD` — snapshots plus previous/next available
   dates for an operational day
 - `GET /api/dro/snapshot?id=123` — one immutable snapshot and its route rows
+- `GET /api/dro/assignments?date=YYYY-MM-DD` — the effective daily staffing board
+- `POST /api/dro/assignments/swap` — Fleet Manager assignment swap
+- `POST /api/dro/assignments/reset` — reset one date to imported Homebase
+- `POST /api/dro/assignments/restore` — restore one person to Homebase
 - `POST /api/internal/dro/snapshot` — bearer-authenticated snapshot ingestion
+- `POST /api/internal/homebase/schedule` — bearer-authenticated weekly schedule ingestion
   for the external collector
