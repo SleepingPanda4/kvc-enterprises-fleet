@@ -45,7 +45,8 @@ test("DRO totals and the exact 600-capacity warning rule are deterministic", () 
   assert.equal(atThreshold.totalStops, 11);
   assert.equal(atThreshold.warning, false);
   assert.equal(calculateDroMetrics({ deliveryCube: 301, vehicleCapacity: 600 }).warning, true);
-  assert.equal(calculateDroMetrics({ deliveryCube: 450, vehicleCapacity: 700 }).warning, false);
+  assert.equal(calculateDroMetrics({ deliveryCube: 419, vehicleCapacity: 420 }).warning, false);
+  assert.equal(calculateDroMetrics({ deliveryCube: 700, vehicleCapacity: 998 }).warning, false);
 });
 
 test("Homebase upserts by shift ID and DRO imports retain historical snapshots", async () => {
@@ -57,7 +58,14 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
   try {
     await runMigration(databaseUrl);
     const { upsertHomebaseShift, upsertHomebaseUserMapping, upsertHomebaseJobMapping } = await import("../services/integrations/homebase");
-    const { createDroSnapshot, getLatestDroSnapshot } = await import("../services/integrations/dro");
+    const {
+      createDroSnapshot,
+      getDroDateNavigation,
+      getDroSnapshotById,
+      getDroSnapshotsForDate,
+      getLatestDroSnapshot,
+      listDroOperationalDates,
+    } = await import("../services/integrations/dro");
     const { closeDb } = await import("../db/index");
 
     const client = createClient({ url: databaseUrl });
@@ -87,18 +95,51 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     assert.equal(shifts.rows[0].raw_note, "Updated assignment");
     assert.equal(Number(shifts.rows[0].team_member_id), adminTeamMemberId);
 
-    await createDroSnapshot({
+    const previousDaySnapshot = await createDroSnapshot({
+      operationalDate: "2026-08-28", capturedAt: "2026-08-28T01:00:00Z", stationId: "KVC", serviceAreaId: "STL", status: "complete",
+      rows: [{ routeNumber: "614", rawWaNumber: "WA-PREV", deliveryCube: 250, vehicleCapacity: 600 }],
+    });
+    const firstSnapshot = await createDroSnapshot({
       operationalDate: "2026-08-29", capturedAt: "2026-08-28T20:00:00Z", stationId: "KVC", serviceAreaId: "STL", status: "complete",
       rows: [{ routeNumber: "617", rawWaNumber: "WA-1", deliveryCube: 301, vehicleCapacity: 600 }],
     });
-    await createDroSnapshot({
+    const secondSnapshot = await createDroSnapshot({
       operationalDate: "2026-08-29", capturedAt: "2026-08-28T21:00:00Z", stationId: "KVC", serviceAreaId: "STL", status: "complete",
       rows: [{ routeNumber: "617", rawWaNumber: "WA-1", deliveryCube: 300, vehicleCapacity: 600 }],
     });
+    const newestDaySnapshot = await createDroSnapshot({
+      operationalDate: "2026-08-31", capturedAt: "2026-08-31T01:00:00Z", stationId: "KVC", serviceAreaId: "STL", status: "complete",
+      rows: [{ routeNumber: "621", rawWaNumber: "WA-NEXT", deliveryCube: 700, vehicleCapacity: 998 }],
+    });
     const snapshots = await client.execute("SELECT COUNT(*) AS count FROM dro_snapshots WHERE operational_date = '2026-08-29'");
     assert.equal(Number(snapshots.rows[0].count), 2);
+
+    const dates = await listDroOperationalDates();
+    assert.deepEqual(dates.map(item => item.operationalDate), ["2026-08-31", "2026-08-29", "2026-08-28"]);
+    assert.equal(Number(dates.find(item => item.operationalDate === "2026-08-29")?.snapshotCount), 2);
+
+    const dateSnapshots = await getDroSnapshotsForDate("2026-08-29");
+    assert.equal(dateSnapshots.length, 2);
+    assert.equal(dateSnapshots[0].id, secondSnapshot.id, "A date should default to its newest snapshot");
+    assert.equal((await getDroSnapshotsForDate("2026-08-30")).length, 0, "Dates without snapshots should be empty");
+
+    const selectedSnapshot = await getDroSnapshotById(firstSnapshot.id);
+    assert.equal(selectedSnapshot?.snapshot.id, firstSnapshot.id);
+    assert.equal(selectedSnapshot?.rows[0].rawWaNumber, "WA-1");
+    assert.equal(selectedSnapshot?.rows[0].warning, true);
+
+    assert.deepEqual(await getDroDateNavigation("2026-08-29"), {
+      previousDate: "2026-08-28", nextDate: "2026-08-31", latestDate: "2026-08-31",
+    });
+    assert.deepEqual(await getDroDateNavigation("2026-08-30"), {
+      previousDate: "2026-08-29", nextDate: "2026-08-31", latestDate: "2026-08-31",
+    });
+    assert.equal((await getDroDateNavigation("2026-08-28")).previousDate, null);
+    assert.equal(previousDaySnapshot.id > 0, true);
+
     const latest = await getLatestDroSnapshot();
-    assert.equal(latest?.snapshot.capturedAt, "2026-08-28T21:00:00Z");
+    assert.equal(latest?.snapshot.id, newestDaySnapshot.id);
+    assert.equal(latest?.snapshot.operationalDate, "2026-08-31");
     assert.equal(latest?.rows[0].warning, false);
     await client.close();
     await closeDb();

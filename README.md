@@ -138,6 +138,13 @@ and child route rows; previous operational-day snapshots are never replaced.
 Collector/browser automation and credentials intentionally remain outside this
 application layer.
 
+The external Playwright/PurpleID collector is not stored in this repository.
+Configure that collector to run at `20:00`, `20:30`, `21:00`, `21:30`, `22:00`,
+`22:30`, and `23:00` in `America/Chicago`. Each run must create a new immutable
+snapshot; it must never update or replace an earlier collection. Do not copy
+collector credentials, cookies, profiles, passwords, tokens, or browser state
+into this repository.
+
 Authenticated read endpoints are available at:
 
 - `GET /api/routes` — route registry with current vehicle plus available driver
@@ -145,3 +152,7 @@ Authenticated read endpoints are available at:
 - `GET /api/homebase/assignments` — tomorrow's assignments; add
   `?date=YYYY-MM-DD` for a specific date
 - `GET /api/dro/latest` — latest snapshot and all of its route rows
+- `GET /api/dro/dates` — available operational dates with snapshot counts
+- `GET /api/dro/date?date=YYYY-MM-DD` — snapshots plus previous/next available
+  dates for an operational day
+- `GET /api/dro/snapshot?id=123` — one immutable snapshot and its route rows

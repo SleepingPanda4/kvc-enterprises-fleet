@@ -127,6 +127,7 @@ export const droSnapshots = sqliteTable("dro_snapshots", {
 }, table => [
   index("dro_snapshots_operational_date_idx").on(table.operationalDate),
   index("dro_snapshots_captured_at_idx").on(table.capturedAt),
+  index("dro_snapshots_operational_date_captured_at_idx").on(table.operationalDate, table.capturedAt),
 ]);
 
 export const droRouteRows = sqliteTable("dro_route_rows", {

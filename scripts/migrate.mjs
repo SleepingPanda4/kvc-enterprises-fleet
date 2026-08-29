@@ -139,6 +139,7 @@ const statements = [
   )`,
   "CREATE INDEX IF NOT EXISTS dro_snapshots_operational_date_idx ON dro_snapshots (operational_date)",
   "CREATE INDEX IF NOT EXISTS dro_snapshots_captured_at_idx ON dro_snapshots (captured_at)",
+  "CREATE INDEX IF NOT EXISTS dro_snapshots_operational_date_captured_at_idx ON dro_snapshots (operational_date, captured_at)",
   `CREATE TABLE IF NOT EXISTS dro_route_rows (
     id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
     snapshot_id INTEGER NOT NULL,

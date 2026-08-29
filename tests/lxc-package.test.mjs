@@ -81,6 +81,7 @@ test("local SQLite migration is repeatable and creates required indexes", async 
       "routes_route_number_unique",
       "homebase_shifts_shift_unique",
       "dro_route_rows_snapshot_wa_unique",
+      "dro_snapshots_operational_date_captured_at_idx",
     ]) assert.ok(names.has(name), `Missing ${name}`);
     const teamColumns = await client.execute("PRAGMA table_info(team_members)");
     assert.ok(
