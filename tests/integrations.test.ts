@@ -7,8 +7,11 @@ import test from "node:test";
 import { createClient } from "@libsql/client";
 import { parseHomebaseAssignment } from "../services/integrations/homebase-assignment";
 import { calculateDroMetrics } from "../services/integrations/dro-calculations";
+import { droRoutesAreIdentical, shouldDeduplicateDroSnapshot, type ComparableDroRoute } from "../services/integrations/dro-deduplication";
+import { DroCollectorError, requestDroCollection } from "../services/integrations/dro-collector";
 import { compareDroRouteNumbers, getNextDroSort, parseDroSortParams } from "../app/dro/sorting";
 import { buildDroCalendarMonth, isDroDateAvailable, shiftDroCalendarMonth } from "../app/dro/calendar";
+import { LiveDroRefreshGuard, loadCollectedDroView, requestLiveDroRefresh } from "../app/dro/live-refresh";
 import { DRO_OVERVIEW_LINKS } from "../app/overview/dro-links";
 
 const projectRoot = new URL("../", import.meta.url);
@@ -88,6 +91,115 @@ test("DRO calendar enables only available dates and navigates months safely", ()
   assert.equal(shiftDroCalendarMonth("2026-01", -1), "2025-12");
   const emptyMonth = buildDroCalendarMonth("2026-10", [], "");
   assert.equal(emptyMonth.days.filter(Boolean).every(day => day?.available === false), true);
+});
+
+test("DRO deduplication cutoff and route comparison use Chicago time and meaningful fields", () => {
+  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T03:30:00.000Z", "2026-08-29"), false, "10:30 PM remains a normal snapshot");
+  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T04:00:00.000Z", "2026-08-29"), false, "Exactly 11 PM remains a normal snapshot");
+  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T04:00:00.001Z", "2026-08-29"), true, "The cutoff begins immediately after 11 PM");
+  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T04:20:00.000Z", "2026-08-29"), true);
+  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T05:10:00.000Z", "2026-08-29"), true, "The prior operational day continues across midnight");
+  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T14:00:00.000Z", "2026-08-30"), false, "A new operational day uses its normal window");
+
+  const base: ComparableDroRoute = {
+    routeNumber: "621", rawWaNumber: "WA-621", displayWaNumber: "WA 621",
+    deliveryCube: 100, pickupCube: 20, combinationCube: 5, usedCapacity: 125, vehicleCapacity: 600,
+    deliveryPackages: 30, pickupPackages: 4, combinationPackages: 2, totalPackages: 36,
+    deliveryStops: 20, pickupStops: 3, combinationStops: 1, totalStops: 24,
+    routeType: "CITY", routeTime: "08:15", distance: 42.5, warning: false,
+  };
+  const second = { ...base, routeNumber: "1127", rawWaNumber: "WA-1127", displayWaNumber: "WA 1127" };
+  assert.equal(droRoutesAreIdentical([base, second], [second, base]), true, "Route ordering is ignored");
+  assert.equal(droRoutesAreIdentical([base], [{ ...base, routeNumber: " 621 ", routeType: " CITY " }]), true, "Text is normalized");
+
+  const meaningfulFields: Array<keyof ComparableDroRoute> = [
+    "routeNumber", "rawWaNumber", "displayWaNumber", "deliveryCube", "pickupCube", "combinationCube", "usedCapacity", "vehicleCapacity",
+    "deliveryPackages", "pickupPackages", "combinationPackages", "totalPackages", "deliveryStops", "pickupStops", "combinationStops", "totalStops",
+    "routeType", "routeTime", "distance", "warning",
+  ];
+  for (const field of meaningfulFields) {
+    const changed = { ...base };
+    const current = changed[field];
+    (changed as Record<keyof ComparableDroRoute, unknown>)[field] = typeof current === "number" ? current + 1 : typeof current === "boolean" ? !current : `${current}-changed`;
+    assert.equal(droRoutesAreIdentical([base], [changed]), false, `${field} must be part of the comparison`);
+  }
+});
+
+test("Fleet Manager collector client keeps authorization server-side and returns safe errors", async () => {
+  const previousToken = process.env.DRO_INGEST_TOKEN;
+  process.env.DRO_INGEST_TOKEN = "server-only-test-token";
+  try {
+    let calledUrl = "";
+    const success = await requestDroCollection({ fetchImplementation: async (input, init) => {
+      calledUrl = String(input);
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer server-only-test-token");
+      return Response.json({ ok: true, snapshotId: 77, operationalDate: "2026-08-29", capturedAt: "2026-08-30T04:20:00.000Z", created: false, deduplicated: true });
+    } });
+    assert.equal(calledUrl, "http://127.0.0.1:3101/collect");
+    assert.deepEqual(success, { ok: true, snapshotId: 77, operationalDate: "2026-08-29", capturedAt: "2026-08-30T04:20:00.000Z", created: false, deduplicated: true });
+    assert.equal(JSON.stringify(success).includes("server-only-test-token"), false);
+
+    await assert.rejects(
+      requestDroCollection({ fetchImplementation: async () => Response.json({ ok: false, error: "collection_in_progress" }, { status: 409 }) }),
+      (error: unknown) => error instanceof DroCollectorError && error.code === "DRO_COLLECTION_IN_PROGRESS" && error.status === 409,
+    );
+    await assert.rejects(
+      requestDroCollection({ fetchImplementation: async () => Response.json({ ok: false, error: "ingestion_failed" }, { status: 502 }) }),
+      (error: unknown) => error instanceof DroCollectorError && error.code === "DRO_INGESTION_FAILED",
+    );
+    await assert.rejects(
+      requestDroCollection({ fetchImplementation: async () => { throw new TypeError("connection refused"); } }),
+      (error: unknown) => error instanceof DroCollectorError && error.code === "DRO_COLLECTOR_UNAVAILABLE" && !error.message.includes("refused"),
+    );
+    await assert.rejects(
+      requestDroCollection({
+        timeoutMs: 5,
+        fetchImplementation: async (_input, init) => new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        }),
+      }),
+      (error: unknown) => error instanceof DroCollectorError && error.code === "DRO_COLLECTION_TIMEOUT",
+    );
+  } finally {
+    if (previousToken === undefined) delete process.env.DRO_INGEST_TOKEN;
+    else process.env.DRO_INGEST_TOKEN = previousToken;
+  }
+});
+
+test("Live DRO frontend helpers prevent duplicate requests and select the returned date and exact snapshot", async () => {
+  let refreshCalls = 0;
+  const refreshResult = await requestLiveDroRefresh(async input => {
+    refreshCalls += 1;
+    assert.equal(input, "/api/dro/refresh");
+    return Response.json({ ok: true, snapshotId: 91, operationalDate: "2026-08-29", capturedAt: "2026-08-30T04:30:00.000Z", created: false, deduplicated: true });
+  });
+  assert.equal(refreshCalls, 1);
+
+  const requestedUrls: string[] = [];
+  const view = await loadCollectedDroView(refreshResult, async <T>(url: string) => {
+    requestedUrls.push(url);
+    if (url === "/api/dro/dates") return { latestDate: "2026-08-29", dates: [] } as T;
+    if (url.startsWith("/api/dro/date")) return { operationalDate: "2026-08-29", snapshots: [{ id: 91 }] } as T;
+    return { snapshot: { id: 91 }, rows: [] } as T;
+  });
+  assert.equal(view.selectedDate, "2026-08-29", "Historical views move to the returned live operational date");
+  assert.equal(view.selectedSnapshotId, 91, "The collector snapshot ID is authoritative");
+  assert.deepEqual(requestedUrls, ["/api/dro/dates", "/api/dro/date?date=2026-08-29", "/api/dro/snapshot?id=91"]);
+
+  const guard = new LiveDroRefreshGuard();
+  let releaseFirst = () => {};
+  let guardedCalls = 0;
+  const first = guard.run(async () => {
+    guardedCalls += 1;
+    await new Promise<void>(resolve => { releaseFirst = resolve; });
+    return "complete";
+  });
+  assert.equal(guard.isActive, true);
+  assert.equal(await guard.run(async () => { guardedCalls += 1; return "duplicate"; }), undefined);
+  assert.equal(guardedCalls, 1, "A second frontend collection request is not started");
+  releaseFirst();
+  assert.equal(await first, "complete");
+  assert.equal(guard.isActive, false);
 });
 
 test("Homebase upserts by shift ID and DRO imports retain historical snapshots", async () => {
@@ -238,8 +350,9 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
 
     const firstIngestion = await ingestDroSnapshot(ingestionRequest(ingestionPayload, "test-ingest-token"));
     assert.equal(firstIngestion.status, 201);
-    const firstIngestionBody = await firstIngestion.json() as { snapshotId: number };
+    const firstIngestionBody = await firstIngestion.json() as { snapshotId: number; created: boolean; deduplicated: boolean };
     assert.ok(firstIngestionBody.snapshotId > 0);
+    assert.deepEqual({ created: firstIngestionBody.created, deduplicated: firstIngestionBody.deduplicated }, { created: true, deduplicated: false });
 
     const secondIngestion = await ingestDroSnapshot(ingestionRequest({
       ...ingestionPayload,
@@ -247,7 +360,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
       rows: [{ ...ingestionPayload.rows[0], rawWaNumber: "WA-INGEST-2" }],
     }, "test-ingest-token"));
     assert.equal(secondIngestion.status, 201);
-    const secondIngestionBody = await secondIngestion.json() as { snapshotId: number };
+    const secondIngestionBody = await secondIngestion.json() as { snapshotId: number; created: boolean; deduplicated: boolean };
     assert.notEqual(firstIngestionBody.snapshotId, secondIngestionBody.snapshotId, "Every valid post must create a new snapshot");
 
     const ingestedSnapshots = await client.execute("SELECT COUNT(*) AS count FROM dro_snapshots WHERE operational_date = '2026-09-01'");
@@ -260,6 +373,98 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     assert.equal(Number(calculatedRow.rows[0].total_packages), 6);
     assert.equal(Number(calculatedRow.rows[0].total_stops), 15);
     assert.equal(Number(calculatedRow.rows[0].warning), 0);
+
+    const richRows = [
+      {
+        routeNumber: "621", rawWaNumber: "WA-LATE-621", displayWaNumber: "WA LATE 621",
+        deliveryCube: 100, pickupCube: 20, combinationCube: 5, vehicleCapacity: 600,
+        deliveryPackages: 30, pickupPackages: 4, combinationPackages: 2,
+        deliveryStops: 20, pickupStops: 3, combinationStops: 1,
+        routeType: "CITY", routeTime: "08:15", distance: 42.5,
+      },
+      {
+        routeNumber: "1127", rawWaNumber: "WA-LATE-1127", displayWaNumber: "WA LATE 1127",
+        deliveryCube: 200, pickupCube: 10, combinationCube: 7, vehicleCapacity: 998,
+        deliveryPackages: 40, pickupPackages: 3, combinationPackages: 1,
+        deliveryStops: 25, pickupStops: 2, combinationStops: 1,
+        routeType: "STRAIGHT TRUCK", routeTime: "09:00", distance: 65,
+      },
+    ];
+    const lateInput = (capturedAt: string, rows = richRows, sourceTimestamp = "DRO report A") => ({
+      operationalDate: "2026-09-03", capturedAt, sourceTimestamp, stationId: "631", serviceAreaId: "2994532", status: "success", rows,
+    });
+
+    const normalDuplicateOne = await createDroSnapshot(lateInput("2026-09-04T03:30:00.000Z"));
+    const normalDuplicateTwo = await createDroSnapshot(lateInput("2026-09-04T03:45:00.000Z"));
+    assert.notEqual(normalDuplicateOne.id, normalDuplicateTwo.id, "Identical snapshots before 11 PM are retained");
+    const exactlyEleven = await createDroSnapshot(lateInput("2026-09-04T04:00:00.000Z"));
+    assert.equal(exactlyEleven.created, true, "Exactly 11:00 PM is retained");
+
+    const rowCountAtCutoff = await client.execute({ sql: "SELECT COUNT(*) AS count FROM dro_route_rows WHERE snapshot_id = ?", args: [exactlyEleven.id] });
+    const lateDuplicate = await createDroSnapshot(lateInput("2026-09-04T04:20:00.000Z", [...richRows].reverse(), "A naturally different report timestamp"));
+    assert.equal(lateDuplicate.id, exactlyEleven.id, "An after-11 duplicate returns the existing snapshot ID");
+    assert.deepEqual({ created: lateDuplicate.created, deduplicated: lateDuplicate.deduplicated }, { created: false, deduplicated: true });
+    const rowCountAfterDuplicate = await client.execute({ sql: "SELECT COUNT(*) AS count FROM dro_route_rows WHERE snapshot_id = ?", args: [exactlyEleven.id] });
+    assert.equal(Number(rowCountAfterDuplicate.rows[0].count), Number(rowCountAtCutoff.rows[0].count), "A duplicate does not insert route rows");
+
+    const capacityChangedRows = richRows.map((row, index) => index === 0 ? { ...row, vehicleCapacity: 420 } : row);
+    const changedLate = await createDroSnapshot(lateInput("2026-09-04T04:30:00.000Z", capacityChangedRows));
+    assert.notEqual(changedLate.id, exactlyEleven.id);
+    assert.deepEqual({ created: changedLate.created, deduplicated: changedLate.deduplicated }, { created: true, deduplicated: false });
+
+    const orderOnlyDuplicate = await createDroSnapshot(lateInput("2026-09-04T04:40:00.000Z", [...capacityChangedRows].reverse(), "DRO report B"));
+    assert.equal(orderOnlyDuplicate.id, changedLate.id, "Ordering and snapshot metadata do not create a late duplicate");
+    const midnightDuplicate = await createDroSnapshot(lateInput("2026-09-04T05:10:00.000Z", capacityChangedRows, "DRO report after midnight"));
+    assert.equal(midnightDuplicate.id, changedLate.id, "Deduplication continues across midnight for the prior operational date");
+
+    const afterMidnightChangedRows = capacityChangedRows.map((row, index) => index === 1 ? { ...row, routeTime: "09:30" } : row);
+    const afterMidnightChanged = await createDroSnapshot(lateInput("2026-09-04T05:20:00.000Z", afterMidnightChangedRows));
+    assert.equal(afterMidnightChanged.created, true, "Changed data after midnight creates a snapshot");
+
+    const concurrentChangedRows = afterMidnightChangedRows.map((row, index) => index === 0 ? { ...row, combinationPackages: row.combinationPackages + 1 } : row);
+    const concurrentResults = await Promise.all([
+      createDroSnapshot(lateInput("2026-09-04T05:30:00.000Z", concurrentChangedRows)),
+      createDroSnapshot(lateInput("2026-09-04T05:31:00.000Z", [...concurrentChangedRows].reverse())),
+    ]);
+    assert.equal(concurrentResults[0].id, concurrentResults[1].id, "Equivalent concurrent late ingestions resolve to one authoritative snapshot");
+    assert.equal(concurrentResults.filter(result => result.created).length, 1);
+    assert.equal(concurrentResults.filter(result => result.deduplicated).length, 1);
+
+    const lateSnapshotCount = await client.execute("SELECT COUNT(*) AS count FROM dro_snapshots WHERE operational_date = '2026-09-03'");
+    assert.equal(Number(lateSnapshotCount.rows[0].count), 6);
+    const immutableCutoff = await client.execute({ sql: "SELECT captured_at FROM dro_snapshots WHERE id = ?", args: [exactlyEleven.id] });
+    assert.equal(immutableCutoff.rows[0].captured_at, "2026-09-04T04:00:00.000Z", "Deduplication never rewrites the existing snapshot");
+
+    const managerSessionToken = "manager-live-refresh-session";
+    const { hashToken } = await import("../app/auth/server");
+    const managerUser = await client.execute("SELECT id FROM users WHERE email = 'admin@admin.com'");
+    assert.equal(managerUser.rows.length, 1);
+    await client.execute({
+      sql: "INSERT INTO auth_sessions (token_hash, user_id) VALUES (?, ?)",
+      args: [hashToken(managerSessionToken), Number(managerUser.rows[0].id)],
+    });
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (input, init) => {
+        assert.equal(String(input), "http://127.0.0.1:3101/collect");
+        assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test-ingest-token");
+        return Response.json({
+          ok: true, snapshotId: changedLate.id, operationalDate: "2026-09-03", capturedAt: "2026-09-04T04:30:00.000Z", created: false, deduplicated: true,
+        });
+      };
+      const { POST: refreshDro } = await import("../app/api/dro/refresh/route");
+      const refreshResponse = await refreshDro(new Request("http://localhost/api/dro/refresh", {
+        method: "POST", headers: { Cookie: `kvc_session=${managerSessionToken}` },
+      }));
+      assert.equal(refreshResponse.status, 200);
+      const refreshBody = await refreshResponse.json() as Record<string, unknown>;
+      assert.equal(refreshBody.snapshotId, changedLate.id);
+      assert.equal(refreshBody.operationalDate, "2026-09-03");
+      assert.equal(refreshBody.deduplicated, true);
+      assert.equal(JSON.stringify(refreshBody).includes("test-ingest-token"), false, "The browser response never contains the bearer token");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
     await client.close();
     await closeDb();
   } finally {

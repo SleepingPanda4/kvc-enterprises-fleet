@@ -115,7 +115,7 @@ export async function POST(request: Request) {
   try {
     const payload = parseDroSnapshotPayload(await request.json());
     const snapshot = await createDroSnapshot(payload);
-    return Response.json({ snapshotId: snapshot.id }, { status: 201 });
+    return Response.json({ snapshotId: snapshot.id, created: snapshot.created, deduplicated: snapshot.deduplicated }, { status: 201 });
   } catch (error) {
     if (error instanceof PayloadError || error instanceof SyntaxError) {
       return Response.json({ error: error instanceof PayloadError ? error.message : "Request body must be valid JSON.", code: "DRO_INGEST_INVALID" }, { status: 400 });

@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { useAuth } from "../auth/AuthGate";
 import { AppShell } from "../components/AppShell";
 import { routeTextColor } from "../routes/config";
 import { useRouteColors } from "../routes/useRouteColors";
 import { DroCalendarPicker } from "./DroCalendarPicker";
+import { LiveDroRefreshGuard, loadCollectedDroView, requestLiveDroRefresh } from "./live-refresh";
 import { compareDroRouteNumbers, getNextDroSort, parseDroSortParams, type DroSortConfig, type DroSortKey } from "./sorting";
 
 type DroSnapshot = {
@@ -99,6 +101,7 @@ function formatNumber(value: number) {
 }
 
 export default function DroPage() {
+  const { user } = useAuth();
   const { colorFor } = useRouteColors();
   const requestedSort = parseDroSortParams(useSearchParams());
   const [data, setData] = useState<DroResponse>({ snapshot: null, rows: [] });
@@ -110,8 +113,12 @@ export default function DroPage() {
   const [search, setSearch] = useState("");
   const [manualSort, setManualSort] = useState<DroSortConfig | null>(null);
   const [loading, setLoading] = useState(true);
+  const [collecting, setCollecting] = useState(false);
   const [error, setError] = useState("");
+  const [statusMessage, setStatusMessage] = useState("");
+  const collectionGuard = useRef(new LiveDroRefreshGuard());
   const { key: sortKey, direction: sortDirection } = manualSort || requestedSort;
+  const canManage = user?.role === "Fleet Manager";
 
   useEffect(() => {
     let cancelled = false;
@@ -191,7 +198,7 @@ export default function DroPage() {
     }
   }
 
-  async function refreshCurrent() {
+  async function reloadStoredData() {
     setLoading(true);
     setError("");
     try {
@@ -210,6 +217,30 @@ export default function DroPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function collectLiveDro() {
+    if (!canManage) return;
+    await collectionGuard.current.run(async () => {
+      setCollecting(true);
+      setError("");
+      setStatusMessage("");
+      try {
+        const result = await requestLiveDroRefresh();
+        const view = await loadCollectedDroView<DroDateIndex, DroDateResponse, DroResponse>(result, requestJson);
+        setDateIndex(view.dateIndex);
+        setSelectedDate(view.selectedDate);
+        setDateInfo(view.dateInfo);
+        setSelectedSnapshotId(view.selectedSnapshotId);
+        setFollowLatestSnapshot(view.dateInfo.snapshots[0]?.id === view.selectedSnapshotId);
+        setData(view.data);
+        if (result.deduplicated) setStatusMessage("DRO is already up to date.");
+      } catch (collectionError) {
+        setError(collectionError instanceof Error ? collectionError.message : "DRO collection could not be completed.");
+      } finally {
+        setCollecting(false);
+      }
+    });
   }
 
   const visibleRows = useMemo(() => {
@@ -246,9 +277,10 @@ export default function DroPage() {
   return <AppShell active="dro">
     <header className="topbar dro-topbar">
       <div><p className="eyebrow">DAILY ROUTE OPERATIONS</p><h1>DRO</h1><p className="page-intro">Browse route plans by operational date and node-worker snapshot.</p></div>
-      <div className="header-actions"><button type="button" className="secondary" disabled={loading} onClick={() => void refreshCurrent()}>{loading ? "Refreshing…" : "↻ Refresh"}</button></div>
+      {canManage && <div className="header-actions"><button type="button" className="secondary" disabled={loading || collecting} onClick={() => void collectLiveDro()}>{collecting ? "Collecting…" : "↻ Refresh"}</button></div>}
     </header>
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError("")} aria-label="Dismiss error">×</button></div>}
+    {statusMessage && <div className="success-banner" role="status">{statusMessage}</div>}
 
     {(selectedDate || dateIndex.latestDate) && <section className="dro-history-controls" aria-label="DRO operational date navigation">
       <div className="dro-history-left">
@@ -263,7 +295,7 @@ export default function DroPage() {
     </section>}
 
     {!snapshot && !loading ? <section className="fleet-card dro-empty-state">
-      <span>▤</span><h2>{selectedDate ? `No DRO data for ${formatOperationalDate(selectedDate)}` : "Waiting for DRO data"}</h2><p>{selectedDate ? "No snapshots were collected for this operational date. Use Previous Day, Next Day, or the calendar to choose another date." : "Routes will appear here automatically after a node worker saves the first DRO snapshot."}</p>{dateIndex.latestDate && selectedDate !== dateIndex.latestDate ? <button type="button" className="secondary" onClick={() => void chooseDate(dateIndex.latestDate as string)}>Return to latest date</button> : <button type="button" className="secondary" onClick={() => void refreshCurrent()}>Check again</button>}
+      <span>▤</span><h2>{selectedDate ? `No DRO data for ${formatOperationalDate(selectedDate)}` : "Waiting for DRO data"}</h2><p>{selectedDate ? "No snapshots were collected for this operational date. Use Previous Day, Next Day, or the calendar to choose another date." : "Routes will appear here automatically after a node worker saves the first DRO snapshot."}</p>{dateIndex.latestDate && selectedDate !== dateIndex.latestDate ? <button type="button" className="secondary" onClick={() => void chooseDate(dateIndex.latestDate as string)}>Return to latest date</button> : canManage ? <button type="button" className="secondary" disabled={collecting} onClick={() => void collectLiveDro()}>{collecting ? "Collecting…" : "Collect DRO now"}</button> : <button type="button" className="secondary" onClick={() => void reloadStoredData()}>Check again</button>}
     </section> : <>
       {snapshot?.errorMessage && <div className="error-banner" role="alert">Worker message: {snapshot.errorMessage}</div>}
 

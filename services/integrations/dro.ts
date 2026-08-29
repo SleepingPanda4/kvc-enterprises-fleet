@@ -2,6 +2,7 @@ import { desc, eq, sql } from "drizzle-orm";
 import { getDb, type Database } from "../../db";
 import { droRouteRows, droSnapshots, routes } from "../../db/schema";
 import { calculateDroMetrics, type DroComponents } from "./dro-calculations";
+import { droRoutesAreIdentical, shouldDeduplicateDroSnapshot, type ComparableDroRoute } from "./dro-deduplication";
 import { ensureRoute } from "./routes";
 
 export type DroRouteInput = DroComponents & {
@@ -24,44 +25,79 @@ export type DroSnapshotInput = {
   rows: DroRouteInput[];
 };
 
-export async function createDroSnapshot(input: DroSnapshotInput, database: Database = getDb()) {
-  const preparedRows: Array<{
-    row: DroRouteInput;
-    routeNumber: string | null;
-    routeId: number | null;
-    metrics: ReturnType<typeof calculateDroMetrics>;
-  }> = [];
-  for (const row of input.rows) {
-    const routeNumber = row.routeNumber?.trim() || null;
-    const route = routeNumber ? await ensureRoute(routeNumber, database) : null;
-    preparedRows.push({ row, routeNumber, routeId: route?.id || null, metrics: calculateDroMetrics(row) });
+let droSnapshotQueue: Promise<void> = Promise.resolve();
+
+async function withDroSnapshotLock<T>(work: () => Promise<T>) {
+  const previous = droSnapshotQueue;
+  let release: () => void = () => {};
+  droSnapshotQueue = new Promise<void>(resolve => { release = resolve; });
+  await previous;
+  try {
+    return await work();
+  } finally {
+    release();
   }
+}
 
-  return database.transaction(async transaction => {
-    const [snapshot] = await transaction.insert(droSnapshots).values({
-      operationalDate: input.operationalDate.trim(),
-      capturedAt: input.capturedAt.trim(),
-      sourceTimestamp: input.sourceTimestamp?.trim() || null,
-      stationId: input.stationId.trim(),
-      serviceAreaId: input.serviceAreaId.trim(),
-      status: input.status.trim(),
-      errorMessage: input.errorMessage?.trim() || null,
-    }).returning();
-
-    if (preparedRows.length) {
-      await transaction.insert(droRouteRows).values(preparedRows.map(({ row, routeNumber, routeId, metrics }) => ({
-        snapshotId: snapshot.id,
-        routeId,
-        routeNumber,
-        rawWaNumber: row.rawWaNumber.trim(),
-        displayWaNumber: row.displayWaNumber?.trim() || null,
-        ...metrics,
-        routeType: row.routeType?.trim() || null,
-        routeTime: row.routeTime?.trim() || null,
-        distance: row.distance ?? null,
-      })));
+export async function createDroSnapshot(input: DroSnapshotInput, database: Database = getDb()) {
+  return withDroSnapshotLock(async () => {
+    const preparedRows: Array<{
+      row: DroRouteInput;
+      routeNumber: string | null;
+      routeId: number | null;
+      metrics: ReturnType<typeof calculateDroMetrics>;
+    }> = [];
+    for (const row of input.rows) {
+      const routeNumber = row.routeNumber?.trim() || null;
+      const route = routeNumber ? await ensureRoute(routeNumber, database) : null;
+      preparedRows.push({ row, routeNumber, routeId: route?.id || null, metrics: calculateDroMetrics(row) });
     }
-    return snapshot;
+
+    if (shouldDeduplicateDroSnapshot(input.capturedAt.trim(), input.operationalDate.trim())) {
+      const [newestSnapshot] = await database.select().from(droSnapshots).orderBy(desc(droSnapshots.id)).limit(1);
+      if (newestSnapshot) {
+        const existingRows = await getDroRouteRows(newestSnapshot.id, database);
+        const incomingRows: ComparableDroRoute[] = preparedRows.map(({ row, routeNumber, metrics }) => ({
+          routeNumber,
+          rawWaNumber: row.rawWaNumber.trim(),
+          displayWaNumber: row.displayWaNumber?.trim() || null,
+          ...metrics,
+          routeType: row.routeType?.trim() || null,
+          routeTime: row.routeTime?.trim() || null,
+          distance: row.distance ?? null,
+        }));
+        if (droRoutesAreIdentical(incomingRows, existingRows)) {
+          return { ...newestSnapshot, created: false, deduplicated: true };
+        }
+      }
+    }
+
+    return database.transaction(async transaction => {
+      const [snapshot] = await transaction.insert(droSnapshots).values({
+        operationalDate: input.operationalDate.trim(),
+        capturedAt: input.capturedAt.trim(),
+        sourceTimestamp: input.sourceTimestamp?.trim() || null,
+        stationId: input.stationId.trim(),
+        serviceAreaId: input.serviceAreaId.trim(),
+        status: input.status.trim(),
+        errorMessage: input.errorMessage?.trim() || null,
+      }).returning();
+
+      if (preparedRows.length) {
+        await transaction.insert(droRouteRows).values(preparedRows.map(({ row, routeNumber, routeId, metrics }) => ({
+          snapshotId: snapshot.id,
+          routeId,
+          routeNumber,
+          rawWaNumber: row.rawWaNumber.trim(),
+          displayWaNumber: row.displayWaNumber?.trim() || null,
+          ...metrics,
+          routeType: row.routeType?.trim() || null,
+          routeTime: row.routeTime?.trim() || null,
+          distance: row.distance ?? null,
+        })));
+      }
+      return { ...snapshot, created: true, deduplicated: false };
+    });
   });
 }
 
