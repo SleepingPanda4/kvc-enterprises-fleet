@@ -52,6 +52,8 @@ type DroDateResponse = {
   latestDate: string | null;
 };
 type DroDateBundle = { dateInfo: DroDateResponse; data: DroResponse; snapshotId: number | null };
+type DroSortKey = "route" | "capacity" | "packages" | "stops";
+type DroSortDirection = "asc" | "desc";
 
 async function requestJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { cache: "no-store" });
@@ -95,6 +97,21 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value);
 }
 
+function compareRouteNumbers(left: DroRouteRow, right: DroRouteRow, direction: DroSortDirection) {
+  const leftRoute = (left.routeNumber || left.registeredRouteNumber || "").trim();
+  const rightRoute = (right.routeNumber || right.registeredRouteNumber || "").trim();
+  const routeGroup = (route: string) => /^\d{3}$/.test(route) ? 0 : /^\d{4,}$/.test(route) ? 1 : 2;
+  const groupDifference = routeGroup(leftRoute) - routeGroup(rightRoute);
+  if (groupDifference !== 0) return groupDifference;
+
+  const leftNumber = /^\d+$/.test(leftRoute) ? Number(leftRoute) : null;
+  const rightNumber = /^\d+$/.test(rightRoute) ? Number(rightRoute) : null;
+  const comparison = leftNumber !== null && rightNumber !== null
+    ? leftNumber - rightNumber
+    : leftRoute.localeCompare(rightRoute, undefined, { numeric: true, sensitivity: "base" });
+  return direction === "asc" ? comparison : -comparison;
+}
+
 export default function DroPage() {
   const { colorFor } = useRouteColors();
   const [data, setData] = useState<DroResponse>({ snapshot: null, rows: [] });
@@ -104,6 +121,8 @@ export default function DroPage() {
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
   const [followLatestSnapshot, setFollowLatestSnapshot] = useState(true);
   const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<DroSortKey>("route");
+  const [sortDirection, setSortDirection] = useState<DroSortDirection>("asc");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -208,9 +227,30 @@ export default function DroPage() {
 
   const visibleRows = useMemo(() => {
     const query = search.trim().toLowerCase();
-    if (!query) return data.rows;
-    return data.rows.filter(row => `${row.routeNumber || row.registeredRouteNumber || ""} ${row.rawWaNumber} ${row.displayWaNumber || ""} ${row.routeType || ""}`.toLowerCase().includes(query));
-  }, [data.rows, search]);
+    const filteredRows = query
+      ? data.rows.filter(row => `${row.routeNumber || row.registeredRouteNumber || ""} ${row.rawWaNumber} ${row.displayWaNumber || ""} ${row.routeType || ""}`.toLowerCase().includes(query))
+      : data.rows;
+    return [...filteredRows].sort((left, right) => {
+      if (sortKey === "route") return compareRouteNumbers(left, right, sortDirection);
+      const leftValue = sortKey === "capacity" ? left.usedCapacity : sortKey === "packages" ? left.totalPackages : left.totalStops;
+      const rightValue = sortKey === "capacity" ? right.usedCapacity : sortKey === "packages" ? right.totalPackages : right.totalStops;
+      const difference = leftValue - rightValue;
+      return sortDirection === "asc" ? difference : -difference;
+    });
+  }, [data.rows, search, sortDirection, sortKey]);
+
+  function changeSort(nextSortKey: DroSortKey) {
+    if (nextSortKey === sortKey) {
+      setSortDirection(current => current === "asc" ? "desc" : "asc");
+      return;
+    }
+    setSortKey(nextSortKey);
+    setSortDirection("asc");
+  }
+
+  function sortIndicator(key: DroSortKey) {
+    return key === sortKey ? <span className="dro-sort-indicator" aria-hidden="true">{sortDirection === "asc" ? "↑" : "↓"}</span> : null;
+  }
 
   const totals = useMemo(() => ({
     packages: data.rows.reduce((sum, row) => sum + row.totalPackages, 0),
@@ -229,25 +269,21 @@ export default function DroPage() {
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError("")} aria-label="Dismiss error">×</button></div>}
 
     {(selectedDate || dateIndex.latestDate) && <section className="dro-history-controls" aria-label="DRO operational date navigation">
-      <button type="button" className="secondary" disabled={loading || !dateInfo?.previousDate} onClick={() => dateInfo?.previousDate && void chooseDate(dateInfo.previousDate)}>← Previous Day</button>
-      <div className="dro-date-center">
-        <strong>{selectedDate ? formatOperationalDate(selectedDate) : "Choose an operational date"}</strong>
-        <label>Calendar <input type="date" value={selectedDate} list="dro-available-dates" onChange={event => void chooseDate(event.target.value)} /></label>
+      <div className="dro-history-left">
+        <button type="button" className="secondary" disabled={loading || !dateInfo?.previousDate} onClick={() => dateInfo?.previousDate && void chooseDate(dateInfo.previousDate)}>← Previous Day</button>
+        <label className="dro-calendar-control"><span className="sr-only">Choose operational date</span><input type="date" value={selectedDate} list="dro-available-dates" onChange={event => void chooseDate(event.target.value)} /></label>
         <datalist id="dro-available-dates">{dateIndex.dates.map(item => <option key={item.operationalDate} value={item.operationalDate}>{item.snapshotCount} snapshots</option>)}</datalist>
       </div>
-      <button type="button" className="secondary" disabled={loading || !dateInfo?.nextDate} onClick={() => dateInfo?.nextDate && void chooseDate(dateInfo.nextDate)}>Next Day →</button>
+      <strong className="dro-date-center">{selectedDate ? formatOperationalDate(selectedDate) : "Choose an operational date"}</strong>
+      <div className="dro-history-right">
+        <label className="dro-history-snapshot"><span>Snapshot</span><select value={selectedSnapshotId || ""} disabled={loading || !dateInfo?.snapshots.length} onChange={event => void chooseSnapshot(Number(event.target.value))}>{dateInfo?.snapshots.map(item => <option key={item.id} value={item.id}>{formatCaptureTime(item.capturedAt)}</option>)}</select></label>
+        <button type="button" className="secondary" disabled={loading || !dateInfo?.nextDate} onClick={() => dateInfo?.nextDate && void chooseDate(dateInfo.nextDate)}>Next Day →</button>
+      </div>
     </section>}
 
     {!snapshot && !loading ? <section className="fleet-card dro-empty-state">
       <span>▤</span><h2>{selectedDate ? `No DRO data for ${formatOperationalDate(selectedDate)}` : "Waiting for DRO data"}</h2><p>{selectedDate ? "No snapshots were collected for this operational date. Use Previous Day, Next Day, or the calendar to choose another date." : "Routes will appear here automatically after a node worker saves the first DRO snapshot."}</p>{dateIndex.latestDate && selectedDate !== dateIndex.latestDate ? <button type="button" className="secondary" onClick={() => void chooseDate(dateIndex.latestDate as string)}>Return to latest date</button> : <button type="button" className="secondary" onClick={() => void refreshCurrent()}>Check again</button>}
     </section> : <>
-      <section className="dro-snapshot-bar" aria-label="Selected DRO snapshot">
-        <div><small>OPERATIONAL DATE</small><strong>{selectedDate ? formatOperationalDate(selectedDate) : "Loading…"}</strong></div>
-        <div><small>STATION / SERVICE AREA</small><strong>{snapshot ? `${snapshot.stationId} / ${snapshot.serviceAreaId}` : "—"}</strong></div>
-        <div><small>CAPTURED</small><strong>{snapshot ? formatTimestamp(snapshot.capturedAt) : "—"}</strong></div>
-        <label className="dro-snapshot-select"><small>SNAPSHOT</small><select value={selectedSnapshotId || ""} disabled={loading || !dateInfo?.snapshots.length} onChange={event => void chooseSnapshot(Number(event.target.value))}>{dateInfo?.snapshots.map(item => <option key={item.id} value={item.id}>{formatCaptureTime(item.capturedAt)}</option>)}</select></label>
-        <span className={`dro-import-status ${snapshot?.status.toLowerCase() === "complete" ? "complete" : "attention"}`}>{snapshot?.status || "Loading"}</span>
-      </section>
       {snapshot?.errorMessage && <div className="error-banner" role="alert">Worker message: {snapshot.errorMessage}</div>}
 
       <section className="dro-summary" aria-label="DRO totals">
@@ -262,7 +298,13 @@ export default function DroPage() {
         <div className="table-wrap">
           <table className="dro-table">
             <colgroup><col className="dro-route-column" /><col className="dro-capacity-column" /><col className="dro-packages-column" /><col className="dro-stops-column" /><col className="dro-details-column" /></colgroup>
-            <thead><tr><th>ROUTE</th><th>CUBE / CAPACITY</th><th>PACKAGES</th><th><span className="dro-stops-heading">STOPS<small>Total | PU | Combo</small></span></th><th>ROUTE DETAILS</th></tr></thead>
+            <thead><tr>
+              <th aria-sort={sortKey === "route" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}><button type="button" className="dro-sort-button" onClick={() => changeSort("route")}>ROUTE {sortIndicator("route")}</button></th>
+              <th aria-sort={sortKey === "capacity" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}><button type="button" className="dro-sort-button" onClick={() => changeSort("capacity")}>CUBE / CAPACITY {sortIndicator("capacity")}</button></th>
+              <th aria-sort={sortKey === "packages" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}><button type="button" className="dro-sort-button" onClick={() => changeSort("packages")}>PACKAGES {sortIndicator("packages")}</button></th>
+              <th aria-sort={sortKey === "stops" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}><button type="button" className="dro-sort-button" onClick={() => changeSort("stops")}><span className="dro-stops-heading"><span>STOPS {sortIndicator("stops")}</span><small>Total | PU | Combo</small></span></button></th>
+              <th>ROUTE DETAILS</th>
+            </tr></thead>
             <tbody>
               {loading && !snapshot ? <tr><td colSpan={5} className="empty">Loading DRO routes…</td></tr> : visibleRows.length === 0 ? <tr><td colSpan={5} className="empty">{data.rows.length ? "No routes match your search." : "The selected snapshot does not contain route rows."}</td></tr> : visibleRows.map(row => {
                 const routeNumber = row.routeNumber || row.registeredRouteNumber;
