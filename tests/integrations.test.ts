@@ -12,6 +12,7 @@ import { DroCollectorError, requestDroCollection } from "../services/integration
 import { compareDroRouteNumbers, getNextDroSort, parseDroSortParams } from "../app/dro/sorting";
 import { buildDroCalendarMonth, isDroDateAvailable, shiftDroCalendarMonth } from "../app/dro/calendar";
 import { LiveDroRefreshGuard, loadCollectedDroView, requestLiveDroRefresh } from "../app/dro/live-refresh";
+import { selectedDroSnapshot, selectedSnapshotTimestamp } from "../app/dro/selected-snapshot";
 import { DRO_OVERVIEW_LINKS } from "../app/overview/dro-links";
 
 const projectRoot = new URL("../", import.meta.url);
@@ -200,6 +201,20 @@ test("Live DRO frontend helpers prevent duplicate requests and select the return
   releaseFirst();
   assert.equal(await first, "complete");
   assert.equal(guard.isActive, false);
+});
+
+test("Selected DRO snapshot keeps rows, KPIs, and source timestamp on the same snapshot", () => {
+  const first = { id: 401, capturedAt: "2026-08-30T01:00:00.000Z", sourceTimestamp: "2026-08-30T00:59:00.000Z" };
+  const second = { id: 402, capturedAt: "2026-08-30T02:30:00.000Z", sourceTimestamp: "2026-08-30T02:29:00.000Z" };
+  const selectedFirst = selectedDroSnapshot(401, first);
+  assert.equal(selectedFirst?.id, 401);
+  assert.equal(selectedSnapshotTimestamp(selectedFirst), "2026-08-30T00:59:00.000Z");
+
+  const selectedSecond = selectedDroSnapshot(402, second);
+  assert.equal(selectedSecond?.id, 402);
+  assert.equal(selectedSnapshotTimestamp(selectedSecond), "2026-08-30T02:29:00.000Z", "Selecting another snapshot updates the displayed source timestamp");
+  assert.equal(selectedDroSnapshot(402, first), null, "Stale rows and metadata are not rendered for a different selected snapshot");
+  assert.equal(selectedSnapshotTimestamp({ id: 403, capturedAt: "2026-08-30T03:00:00.000Z", sourceTimestamp: null }), "2026-08-30T03:00:00.000Z", "Capture time is the exact-snapshot fallback when no source timestamp was supplied");
 });
 
 test("Homebase upserts by shift ID and DRO imports retain historical snapshots", async () => {

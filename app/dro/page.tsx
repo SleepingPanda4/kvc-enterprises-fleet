@@ -8,6 +8,7 @@ import { routeTextColor } from "../routes/config";
 import { useRouteColors } from "../routes/useRouteColors";
 import { DroCalendarPicker } from "./DroCalendarPicker";
 import { LiveDroRefreshGuard, loadCollectedDroView, requestLiveDroRefresh } from "./live-refresh";
+import { selectedDroSnapshot, selectedSnapshotTimestamp } from "./selected-snapshot";
 import { compareDroRouteNumbers, getNextDroSort, parseDroSortParams, type DroSortConfig, type DroSortKey } from "./sorting";
 
 type DroSnapshot = {
@@ -140,6 +141,7 @@ export default function DroPage() {
   const [error, setError] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const collectionGuard = useRef(new LiveDroRefreshGuard());
+  const snapshotRequest = useRef(0);
   const { key: sortKey, direction: sortDirection } = manualSort || requestedSort;
   const canManage = user?.role === "Fleet Manager";
 
@@ -212,11 +214,13 @@ export default function DroPage() {
 
   async function chooseDate(operationalDate: string) {
     if (!operationalDate) return;
+    const requestId = ++snapshotRequest.current;
     setLoading(true);
     setError("");
     setFollowLatestSnapshot(true);
     try {
       const bundle = await requestDateBundle(operationalDate);
+      if (requestId !== snapshotRequest.current) return;
       setSelectedDate(operationalDate);
       setDateInfo(bundle.dateInfo);
       setSelectedSnapshotId(bundle.snapshotId);
@@ -229,11 +233,15 @@ export default function DroPage() {
   }
 
   async function chooseSnapshot(snapshotId: number) {
+    const requestId = ++snapshotRequest.current;
     setLoading(true);
     setError("");
+    setSelectedSnapshotId(snapshotId);
+    setData({ snapshot: null, rows: [] });
     try {
       const snapshotData = await requestJson<DroResponse>(`/api/dro/snapshot?id=${snapshotId}`);
-      setSelectedSnapshotId(snapshotId);
+      if (requestId !== snapshotRequest.current) return;
+      if (snapshotData.snapshot?.id !== snapshotId) throw new Error("The selected DRO snapshot could not be loaded.");
       setFollowLatestSnapshot(snapshotId === dateInfo?.snapshots[0]?.id);
       setData(snapshotData);
     } catch (loadError) {
@@ -350,14 +358,17 @@ export default function DroPage() {
     .filter(member => member.destination.type === "route")
     .map(member => [(member.destination as { type: "route"; routeNumber: string }).routeNumber, member])), [assignmentBoard]);
 
+  const snapshot = selectedDroSnapshot(selectedSnapshotId, data.snapshot);
+  const selectedRows = useMemo(() => snapshot ? data.rows : [], [data.rows, snapshot]);
+
   const visibleRows = useMemo(() => {
     const query = search.trim().toLowerCase();
     const filteredRows = query
-      ? data.rows.filter(row => {
+      ? selectedRows.filter(row => {
         const routeNumber = row.routeNumber || row.registeredRouteNumber || "";
         return `${routeNumber} ${driverByRoute.get(routeNumber)?.name || ""} ${row.rawWaNumber} ${row.displayWaNumber || ""} ${row.routeType || ""}`.toLowerCase().includes(query);
       })
-      : data.rows;
+      : selectedRows;
     return [...filteredRows].sort((left, right) => {
       if (sortKey === "route") return compareDroRouteNumbers(left.routeNumber || left.registeredRouteNumber, right.routeNumber || right.registeredRouteNumber, sortDirection);
       const leftValue = sortKey === "capacity" ? left.usedCapacity : sortKey === "packages" ? left.totalPackages : left.totalStops;
@@ -365,7 +376,7 @@ export default function DroPage() {
       const difference = leftValue - rightValue;
       return sortDirection === "asc" ? difference : -difference;
     });
-  }, [data.rows, driverByRoute, search, sortDirection, sortKey]);
+  }, [driverByRoute, search, selectedRows, sortDirection, sortKey]);
 
   function changeSort(nextSortKey: DroSortKey) {
     setManualSort(getNextDroSort({ key: sortKey, direction: sortDirection }, nextSortKey));
@@ -376,12 +387,10 @@ export default function DroPage() {
   }
 
   const totals = useMemo(() => ({
-    packages: data.rows.reduce((sum, row) => sum + row.totalPackages, 0),
-    stops: data.rows.reduce((sum, row) => sum + row.totalStops, 0),
-    warnings: data.rows.filter(row => row.warning).length,
-  }), [data.rows]);
-
-  const snapshot = data.snapshot;
+    packages: selectedRows.reduce((sum, row) => sum + row.totalPackages, 0),
+    stops: selectedRows.reduce((sum, row) => sum + row.totalStops, 0),
+    warnings: selectedRows.filter(row => row.warning).length,
+  }), [selectedRows]);
   const isLatestDate = Boolean(selectedDate && selectedDate === dateIndex.latestDate);
   const specialNames = ["BC", "TBD ROUTE", "ON CALL AT HOME"];
   const extraSpecialNames = [...new Set((assignmentBoard?.members || [])
@@ -422,7 +431,7 @@ export default function DroPage() {
       {snapshot?.errorMessage && <div className="error-banner" role="alert">Worker message: {snapshot.errorMessage}</div>}
 
       <section className="dro-summary" aria-label="DRO totals">
-        <article><small>ROUTES</small><strong>{data.rows.length}</strong><p>Rows in selected snapshot</p></article>
+        <article><small>ROUTES</small><strong>{selectedRows.length}</strong><p>Rows in selected snapshot</p></article>
         <article><small>PACKAGES</small><strong>{formatNumber(totals.packages)}</strong><p>Total delivery, pickup, and combination</p></article>
         <article><small>STOPS</small><strong>{formatNumber(totals.stops)}</strong><p>Total planned stops</p></article>
         <article className={totals.warnings ? "warning" : ""}><small>CAPACITY WARNINGS</small><strong>{totals.warnings}</strong><p>{totals.warnings ? "Routes requiring attention" : "No flagged routes"}</p></article>
@@ -430,25 +439,27 @@ export default function DroPage() {
 
       <div className="dro-board-grid">
       <section className="fleet-card dro-routes-card">
-        <div className="fleet-head"><div><h2>Route list</h2><p>{snapshot ? `Source timestamp: ${formatTimestamp(snapshot.sourceTimestamp)}` : "Loading the selected route rows."}</p></div><label className="search">⌕ <input value={search} onChange={event => setSearch(event.target.value)} aria-label="Search DRO routes" placeholder="Search route, WA, or type" /></label></div>
+        <div className="fleet-head"><div><h2>Route list</h2><p>{snapshot ? `Source timestamp: ${formatTimestamp(selectedSnapshotTimestamp(snapshot))}` : "Loading the selected route rows."}</p></div><label className="search">⌕ <input value={search} onChange={event => setSearch(event.target.value)} aria-label="Search DRO routes" placeholder="Search route, WA, or type" /></label></div>
         <div className="table-wrap">
           <table className="dro-table">
-            <colgroup><col className="dro-route-column" /><col className="dro-capacity-column" /><col className="dro-packages-column" /><col className="dro-stops-column" /><col className="dro-details-column" /></colgroup>
+            <colgroup><col className="dro-driver-column" /><col className="dro-route-column" /><col className="dro-capacity-column" /><col className="dro-packages-column" /><col className="dro-stops-column" /><col className="dro-details-column" /></colgroup>
             <thead><tr>
-              <th aria-sort={sortKey === "route" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}><button type="button" className="dro-sort-button" onClick={() => changeSort("route")}>DRIVER / ROUTE {sortIndicator("route")}</button></th>
+              <th>DRIVER</th>
+              <th aria-sort={sortKey === "route" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}><button type="button" className="dro-sort-button" onClick={() => changeSort("route")}>ROUTE {sortIndicator("route")}</button></th>
               <th aria-sort={sortKey === "capacity" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}><button type="button" className="dro-sort-button" onClick={() => changeSort("capacity")}>CUBE / CAPACITY {sortIndicator("capacity")}</button></th>
               <th aria-sort={sortKey === "packages" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}><button type="button" className="dro-sort-button" onClick={() => changeSort("packages")}>PACKAGES {sortIndicator("packages")}</button></th>
               <th aria-sort={sortKey === "stops" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}><button type="button" className="dro-sort-button" onClick={() => changeSort("stops")}><span className="dro-stops-heading"><span>STOPS {sortIndicator("stops")}</span><small>Total | PU | Combo</small></span></button></th>
               <th>ROUTE DETAILS</th>
             </tr></thead>
             <tbody>
-              {loading && !snapshot ? <tr><td colSpan={5} className="empty">Loading DRO routes…</td></tr> : visibleRows.length === 0 ? <tr><td colSpan={5} className="empty">{data.rows.length ? "No routes match your search." : "The selected snapshot does not contain route rows."}</td></tr> : visibleRows.map(row => {
+              {loading && !snapshot ? <tr><td colSpan={6} className="empty">Loading DRO routes…</td></tr> : visibleRows.length === 0 ? <tr><td colSpan={6} className="empty">{selectedRows.length ? "No routes match your search." : "The selected snapshot does not contain route rows."}</td></tr> : visibleRows.map(row => {
                 const routeNumber = row.routeNumber || row.registeredRouteNumber;
                 const driver = routeNumber ? driverByRoute.get(routeNumber) : undefined;
                 const color = colorFor(routeNumber);
                 const capacityPercent = row.vehicleCapacity > 0 ? Math.round((row.usedCapacity / row.vehicleCapacity) * 100) : 0;
                 return <tr key={row.id} className={row.warning ? "dro-warning-row" : ""}>
-                  <td><div className="dro-driver-route">{canManage && routeNumber ? <select className="dro-driver-select" aria-label={`Driver for route ${routeNumber}`} value={driver?.teamMemberId || ""} disabled={Boolean(savingAssignment) || assignmentsLoading} title={driver?.homebase ? `Homebase: ${driver.homebase.rawAssignment}` : "No Homebase assignment"} onChange={event => void swapAssignment({ type: "route", routeNumber }, Number(event.target.value), driver?.teamMemberId)}><option value="" disabled>{assignmentsLoading ? "Loading assignments…" : "Unassigned"}</option>{assignmentBoard?.members.map(member => <option key={member.teamMemberId} value={member.teamMemberId}>{member.name} — {member.assignmentLabel}</option>)}</select> : <strong className="dro-driver-name" title={driver?.homebase ? `Homebase: ${driver.homebase.rawAssignment}` : undefined}>{assignmentsLoading ? "Loading assignments…" : driver?.name || "Unassigned"}</strong>}<span className="dro-driver-route-meta">{routeNumber ? <strong className="route-number-badge" style={{ backgroundColor: color, color: routeTextColor(color) }}>{routeNumber}</strong> : <span className="route-unassigned">Unmapped</span>}{driver?.source === "manual" && <span className="assignment-source" title={`Homebase: ${driver.homebase?.rawAssignment || "not assigned"}`}>Manual</span>}{canManage && driver?.source === "manual" && driver.homebase && <button type="button" className="restore-homebase" disabled={Boolean(savingAssignment)} title={`Use Homebase assignment: ${driver.homebase.rawAssignment}`} onClick={() => void restoreHomebase(driver.teamMemberId)}>↺</button>}</span></div></td>
+                  <td>{canManage && routeNumber ? <select className="dro-driver-select" aria-label={`Driver for route ${routeNumber}`} value={driver?.teamMemberId || ""} disabled={Boolean(savingAssignment) || assignmentsLoading} title={driver?.homebase ? `Homebase: ${driver.homebase.rawAssignment}` : "No Homebase assignment"} onChange={event => void swapAssignment({ type: "route", routeNumber }, Number(event.target.value), driver?.teamMemberId)}><option value="" disabled>{assignmentsLoading ? "Loading assignments…" : "Unassigned"}</option>{assignmentBoard?.members.map(member => <option key={member.teamMemberId} value={member.teamMemberId}>{member.teamMemberId === driver?.teamMemberId ? member.name : `${member.name} — ${member.assignmentLabel}`}</option>)}</select> : <strong className="dro-driver-name" title={driver?.homebase ? `Homebase: ${driver.homebase.rawAssignment}` : undefined}>{assignmentsLoading ? "Loading assignments…" : driver?.name || "Unassigned"}</strong>}</td>
+                  <td><span className="dro-driver-route-meta">{routeNumber ? <strong className="route-number-badge" style={{ backgroundColor: color, color: routeTextColor(color) }}>{routeNumber}</strong> : <span className="route-unassigned">Unmapped</span>}{driver?.source === "manual" && <span className="assignment-source" title={`Homebase: ${driver.homebase?.rawAssignment || "not assigned"}`}>Manual</span>}{canManage && driver?.source === "manual" && driver.homebase && <button type="button" className="restore-homebase" disabled={Boolean(savingAssignment)} title={`Use Homebase assignment: ${driver.homebase.rawAssignment}`} onClick={() => void restoreHomebase(driver.teamMemberId)}>↺</button>}</span></td>
                   <td><div className="dro-capacity"><strong>{formatNumber(row.usedCapacity)} / {formatNumber(row.vehicleCapacity)}</strong><span aria-hidden="true"><i style={{ width: `${Math.min(capacityPercent, 100)}%` }} /></span>{row.warning && <span className="sr-only">Capacity warning</span>}</div></td>
                   <td><strong className="dro-primary-value">{formatNumber(row.totalPackages)}</strong></td>
                   <td><div className="dro-stop-values" aria-label={`${row.totalStops} total stops, ${row.pickupStops} pickup stops, ${row.combinationStops} combination stops`}><strong>{row.totalStops}</strong><span>|</span><strong>{row.pickupStops}</strong><span>|</span><strong>{row.combinationStops}</strong></div></td>
@@ -458,15 +469,15 @@ export default function DroPage() {
             </tbody>
           </table>
         </div>
-        <footer className="table-foot"><span>{visibleRows.length} of {data.rows.length} route{data.rows.length === 1 ? "" : "s"}</span><span>{isLatestDate ? "Refreshes every minute" : "Historical snapshot"}</span></footer>
+        <footer className="table-foot"><span>{visibleRows.length} of {selectedRows.length} route{selectedRows.length === 1 ? "" : "s"}</span><span>{isLatestDate ? "Refreshes every minute" : "Historical snapshot"}</span></footer>
       </section>
       <aside className="fleet-card other-assignments-card" aria-label="Other assignments">
         <div className="other-assignments-head"><div><h2>Other assignments</h2><p>{selectedDate ? formatOperationalDate(selectedDate) : "Selected operational date"}</p></div>{canManage && <button type="button" className="secondary" disabled={Boolean(savingAssignment) || assignmentsLoading || !assignmentBoard?.hasHomebaseData} onClick={() => void resetAssignments()}>{savingAssignment === "reset" ? "Resetting…" : "Reset to Homebase"}</button>}</div>
-        {assignmentsLoading ? <p className="assignment-panel-state">Loading assignments…</p> : !assignmentBoard ? <p className="assignment-panel-state">Assignments are unavailable.</p> : <>
+        <div className="other-assignments-body">{assignmentsLoading ? <p className="assignment-panel-state">Loading assignments…</p> : !assignmentBoard ? <p className="assignment-panel-state">Assignments are unavailable.</p> : <>
           {!assignmentBoard.hasHomebaseData && <p className="assignment-panel-note">No Homebase schedule for this date. Team members remain available for manual assignment.</p>}
           <div className="assignment-buckets">{assignmentBuckets.map(bucket => <section className="assignment-bucket" key={bucket.name}><header><strong>{bucket.name}</strong><span>{bucket.members.length}</span></header>{bucket.members.length ? <div className="assignment-people">{bucket.members.map(member => <div className="assignment-person" key={member.teamMemberId}>{canManage ? <select aria-label={`Reassign ${member.name} from ${bucket.name}`} value={member.teamMemberId} disabled={Boolean(savingAssignment)} title={member.homebase ? `Homebase: ${member.homebase.rawAssignment}` : "No Homebase assignment"} onChange={event => void swapAssignment(member.destination, Number(event.target.value), member.teamMemberId)}>{assignmentBoard.members.map(option => <option key={option.teamMemberId} value={option.teamMemberId}>{option.name} — {option.assignmentLabel}</option>)}</select> : <strong title={member.homebase ? `Homebase: ${member.homebase.rawAssignment}` : undefined}>{member.name}</strong>}{member.source === "manual" && <span className="assignment-source">Manual</span>}{canManage && member.source === "manual" && member.homebase && <button type="button" className="restore-homebase" disabled={Boolean(savingAssignment)} title={`Use Homebase assignment: ${member.homebase.rawAssignment}`} onClick={() => void restoreHomebase(member.teamMemberId)}>↺</button>}</div>)}</div> : <p>No team members</p>}</section>)}</div>
           {assignmentBoard.unmatchedHomebase.length > 0 && <details className="unmatched-homebase"><summary>Unmatched Homebase employees ({assignmentBoard.unmatchedHomebase.length})</summary><ul>{assignmentBoard.unmatchedHomebase.map(item => <li key={item.shiftId}>{item.employeeDisplayName} — {item.rawAssignment}</li>)}</ul></details>}
-        </>}
+        </>}</div>
       </aside>
       </div>
     </>}
