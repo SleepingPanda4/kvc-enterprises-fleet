@@ -5,7 +5,8 @@ import { useSearchParams } from "next/navigation";
 import { AppShell } from "../components/AppShell";
 import { routeTextColor } from "../routes/config";
 import { useRouteColors } from "../routes/useRouteColors";
-import { compareDroRouteNumbers, parseDroSortParams, type DroSortConfig, type DroSortKey } from "./sorting";
+import { DroCalendarPicker } from "./DroCalendarPicker";
+import { compareDroRouteNumbers, getNextDroSort, parseDroSortParams, type DroSortConfig, type DroSortKey } from "./sorting";
 
 type DroSnapshot = {
   id: number;
@@ -226,11 +227,7 @@ export default function DroPage() {
   }, [data.rows, search, sortDirection, sortKey]);
 
   function changeSort(nextSortKey: DroSortKey) {
-    if (nextSortKey === sortKey) {
-      setManualSort({ key: nextSortKey, direction: sortDirection === "asc" ? "desc" : "asc" });
-      return;
-    }
-    setManualSort({ key: nextSortKey, direction: "asc" });
+    setManualSort(getNextDroSort({ key: sortKey, direction: sortDirection }, nextSortKey));
   }
 
   function sortIndicator(key: DroSortKey) {
@@ -256,8 +253,7 @@ export default function DroPage() {
     {(selectedDate || dateIndex.latestDate) && <section className="dro-history-controls" aria-label="DRO operational date navigation">
       <div className="dro-history-left">
         <button type="button" className="secondary" disabled={loading || !dateInfo?.previousDate} onClick={() => dateInfo?.previousDate && void chooseDate(dateInfo.previousDate)}>← Previous Day</button>
-        <label className="dro-calendar-control"><span className="sr-only">Choose operational date</span><input type="date" value={selectedDate} list="dro-available-dates" onChange={event => void chooseDate(event.target.value)} /></label>
-        <datalist id="dro-available-dates">{dateIndex.dates.map(item => <option key={item.operationalDate} value={item.operationalDate}>{item.snapshotCount} snapshots</option>)}</datalist>
+        <DroCalendarPicker availableDates={dateIndex.dates.map(item => item.operationalDate)} selectedDate={selectedDate} loading={loading} onSelect={date => void chooseDate(date)} />
       </div>
       <strong className="dro-date-center">{selectedDate ? formatOperationalDate(selectedDate) : "Choose an operational date"}</strong>
       <div className="dro-history-right">

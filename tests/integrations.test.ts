@@ -7,7 +7,8 @@ import test from "node:test";
 import { createClient } from "@libsql/client";
 import { parseHomebaseAssignment } from "../services/integrations/homebase-assignment";
 import { calculateDroMetrics } from "../services/integrations/dro-calculations";
-import { compareDroRouteNumbers, parseDroSortParams } from "../app/dro/sorting";
+import { compareDroRouteNumbers, getNextDroSort, parseDroSortParams } from "../app/dro/sorting";
+import { buildDroCalendarMonth, isDroDateAvailable, shiftDroCalendarMonth } from "../app/dro/calendar";
 import { DRO_OVERVIEW_LINKS } from "../app/overview/dro-links";
 
 const projectRoot = new URL("../", import.meta.url);
@@ -61,10 +62,32 @@ test("DRO overview links and URL sorting preserve the requested ordering", () =>
   assert.deepEqual(parseDroSortParams(new URLSearchParams("sort=packages&direction=desc")), { key: "packages", direction: "desc" });
   assert.deepEqual(parseDroSortParams(new URLSearchParams("sort=cube&direction=desc")), { key: "capacity", direction: "desc" });
   assert.deepEqual(parseDroSortParams(new URLSearchParams("sort=invalid&direction=desc")), { key: "route", direction: "asc" });
+  assert.deepEqual(getNextDroSort({ key: "route", direction: "asc" }, "packages"), { key: "packages", direction: "desc" });
+  assert.deepEqual(getNextDroSort({ key: "packages", direction: "desc" }, "packages"), { key: "packages", direction: "asc" });
+  assert.deepEqual(getNextDroSort({ key: "packages", direction: "asc" }, "stops"), { key: "stops", direction: "desc" });
+  assert.deepEqual(getNextDroSort({ key: "stops", direction: "desc" }, "capacity"), { key: "capacity", direction: "desc" });
+  assert.deepEqual(getNextDroSort({ key: "capacity", direction: "desc" }, "route"), { key: "route", direction: "asc" });
 
   const routes = ["1127", "617", "645", "621", "9804"];
   assert.deepEqual([...routes].sort((left, right) => compareDroRouteNumbers(left, right, "asc")), ["617", "621", "645", "1127", "9804"]);
   assert.deepEqual([...routes].sort((left, right) => compareDroRouteNumbers(left, right, "desc")), ["645", "621", "617", "9804", "1127"]);
+});
+
+test("DRO calendar enables only available dates and navigates months safely", () => {
+  const availableDates = ["2026-08-28", "2026-08-31", "2026-09-02"];
+  const august = buildDroCalendarMonth("2026-08", availableDates, "2026-08-28");
+  const day28 = august.days.find(day => day?.date === "2026-08-28");
+  const day29 = august.days.find(day => day?.date === "2026-08-29");
+  assert.equal(day28?.available, true);
+  assert.equal(day28?.selected, true);
+  assert.equal(day29?.available, false);
+  assert.equal(day29?.selected, false);
+  assert.equal(isDroDateAvailable("2026-08-31", availableDates), true);
+  assert.equal(isDroDateAvailable("2026-08-30", availableDates), false, "An unavailable day cannot be selected");
+  assert.equal(shiftDroCalendarMonth("2026-08", 1), "2026-09");
+  assert.equal(shiftDroCalendarMonth("2026-01", -1), "2025-12");
+  const emptyMonth = buildDroCalendarMonth("2026-10", [], "");
+  assert.equal(emptyMonth.days.filter(Boolean).every(day => day?.available === false), true);
 });
 
 test("Homebase upserts by shift ID and DRO imports retain historical snapshots", async () => {

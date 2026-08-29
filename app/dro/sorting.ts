@@ -15,6 +15,11 @@ export function parseDroSortParams(params: Pick<URLSearchParams, "get">): DroSor
   return { key, direction: params.get("direction")?.toLowerCase() === "desc" ? "desc" : "asc" };
 }
 
+export function getNextDroSort(current: DroSortConfig, nextKey: DroSortKey): DroSortConfig {
+  if (current.key === nextKey) return { key: nextKey, direction: current.direction === "asc" ? "desc" : "asc" };
+  return { key: nextKey, direction: nextKey === "route" ? "asc" : "desc" };
+}
+
 export function compareDroRouteNumbers(leftRoute: string | null, rightRoute: string | null, direction: DroSortDirection) {
   const left = leftRoute?.trim() || "";
   const right = rightRoute?.trim() || "";
