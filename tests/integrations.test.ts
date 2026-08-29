@@ -141,10 +141,64 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     assert.equal(latest?.snapshot.id, newestDaySnapshot.id);
     assert.equal(latest?.snapshot.operationalDate, "2026-08-31");
     assert.equal(latest?.rows[0].warning, false);
+
+    process.env.DRO_INGEST_TOKEN = "test-ingest-token";
+    const { POST: ingestDroSnapshot } = await import("../app/api/internal/dro/snapshot/route");
+    const ingestionPayload = {
+      operationalDate: "2026-09-01",
+      capturedAt: "2026-09-02T01:00:00.000Z",
+      sourceTimestamp: "2026-09-01 8:00 PM",
+      stationId: "631",
+      serviceAreaId: "2994532",
+      status: "success",
+      rows: [{
+        routeNumber: "625", rawWaNumber: "WA-INGEST", displayWaNumber: "WA INGEST",
+        deliveryCube: 10, pickupCube: 20, combinationCube: 30, vehicleCapacity: 600,
+        deliveryPackages: 1, pickupPackages: 2, combinationPackages: 3,
+        deliveryStops: 4, pickupStops: 5, combinationStops: 6, totalStops: 15,
+        routeType: "CITY", routeTime: "08:00", distance: 42.5,
+        usedCapacity: 999, totalPackages: 999, warning: true,
+      }],
+    };
+    function ingestionRequest(body: unknown, token?: string) {
+      const headers = new Headers({ "Content-Type": "application/json" });
+      if (token) headers.set("Authorization", `Bearer ${token}`);
+      return new Request("http://localhost/api/internal/dro/snapshot", { method: "POST", headers, body: JSON.stringify(body) });
+    }
+
+    assert.equal((await ingestDroSnapshot(ingestionRequest(ingestionPayload))).status, 401, "A missing token must be rejected");
+    assert.equal((await ingestDroSnapshot(ingestionRequest(ingestionPayload, "wrong-token"))).status, 401, "A wrong token must be rejected");
+    assert.equal((await ingestDroSnapshot(ingestionRequest({ ...ingestionPayload, rows: "invalid" }, "test-ingest-token"))).status, 400, "An invalid payload must be rejected");
+
+    const firstIngestion = await ingestDroSnapshot(ingestionRequest(ingestionPayload, "test-ingest-token"));
+    assert.equal(firstIngestion.status, 201);
+    const firstIngestionBody = await firstIngestion.json() as { snapshotId: number };
+    assert.ok(firstIngestionBody.snapshotId > 0);
+
+    const secondIngestion = await ingestDroSnapshot(ingestionRequest({
+      ...ingestionPayload,
+      capturedAt: "2026-09-02T01:30:00.000Z",
+      rows: [{ ...ingestionPayload.rows[0], rawWaNumber: "WA-INGEST-2" }],
+    }, "test-ingest-token"));
+    assert.equal(secondIngestion.status, 201);
+    const secondIngestionBody = await secondIngestion.json() as { snapshotId: number };
+    assert.notEqual(firstIngestionBody.snapshotId, secondIngestionBody.snapshotId, "Every valid post must create a new snapshot");
+
+    const ingestedSnapshots = await client.execute("SELECT COUNT(*) AS count FROM dro_snapshots WHERE operational_date = '2026-09-01'");
+    assert.equal(Number(ingestedSnapshots.rows[0].count), 2);
+    const calculatedRow = await client.execute({
+      sql: "SELECT used_capacity, total_packages, total_stops, warning FROM dro_route_rows WHERE snapshot_id = ?",
+      args: [firstIngestionBody.snapshotId],
+    });
+    assert.equal(Number(calculatedRow.rows[0].used_capacity), 60);
+    assert.equal(Number(calculatedRow.rows[0].total_packages), 6);
+    assert.equal(Number(calculatedRow.rows[0].total_stops), 15);
+    assert.equal(Number(calculatedRow.rows[0].warning), 0);
     await client.close();
     await closeDb();
   } finally {
     delete process.env.DATABASE_URL;
+    delete process.env.DRO_INGEST_TOKEN;
     await rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

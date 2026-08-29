@@ -22,9 +22,11 @@ function runMigration(databaseUrl) {
 
 test("package emits a standalone Node server", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const serviceFile = await readFile(new URL("../deploy/kvc-fleet.service", import.meta.url), "utf8");
   await readFile(new URL("../dist/standalone/server.js", import.meta.url));
   assert.equal(packageJson.scripts.start, "node dist/standalone/server.js");
   assert.equal(packageJson.scripts["db:migrate"], "node scripts/migrate.mjs");
+  assert.match(serviceFile, /^EnvironmentFile=-\/etc\/kvc-fleet\/dro\.env$/m);
 });
 
 test("local SQLite migration is repeatable and creates required indexes", async () => {

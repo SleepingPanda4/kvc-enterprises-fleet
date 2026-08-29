@@ -13,6 +13,7 @@ Environment=HOST=0.0.0.0
 Environment=PORT=3000
 Environment=DATABASE_URL=file:/var/lib/kvc-fleet/fleet.db
 EnvironmentFile=-/etc/kvc-fleet.env
+EnvironmentFile=-/etc/kvc-fleet/dro.env
 ExecStartPre=/usr/bin/env npm run db:migrate
 ExecStart=/usr/bin/env npm run start
 Restart=on-failure

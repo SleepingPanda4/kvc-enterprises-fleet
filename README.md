@@ -145,6 +145,25 @@ snapshot; it must never update or replace an earlier collection. Do not copy
 collector credentials, cookies, profiles, passwords, tokens, or browser state
 into this repository.
 
+The collector submits snapshots to `POST /api/internal/dro/snapshot` with an
+`Authorization: Bearer <token>` header. Fleet Manager reads the matching
+`DRO_INGEST_TOKEN` from `/etc/kvc-fleet/dro.env`; this endpoint deliberately
+does not use an interactive user session. Cube usage, package totals, stop
+totals, and capacity warnings are calculated by Fleet Manager rather than
+trusted from collector-provided totals.
+
+The systemd unit treats `/etc/kvc-fleet/dro.env` as an optional protected
+environment file. Preserve every existing credential in that file and add or
+update only the `DRO_INGEST_TOKEN` entry. The deployment package and deployment
+script never copy that file. Recommended ownership and permissions are:
+
+```bash
+chown root:kvcfleet /etc/kvc-fleet/dro.env
+chmod 0640 /etc/kvc-fleet/dro.env
+systemctl daemon-reload
+systemctl restart kvc-fleet
+```
+
 Authenticated read endpoints are available at:
 
 - `GET /api/routes` — route registry with current vehicle plus available driver
@@ -156,3 +175,5 @@ Authenticated read endpoints are available at:
 - `GET /api/dro/date?date=YYYY-MM-DD` — snapshots plus previous/next available
   dates for an operational day
 - `GET /api/dro/snapshot?id=123` — one immutable snapshot and its route rows
+- `POST /api/internal/dro/snapshot` — bearer-authenticated snapshot ingestion
+  for the external collector
