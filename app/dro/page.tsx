@@ -222,7 +222,7 @@ export default function DroPage() {
   const isLatestDate = Boolean(selectedDate && selectedDate === dateIndex.latestDate);
 
   return <AppShell active="dro">
-    <header className="topbar">
+    <header className="topbar dro-topbar">
       <div><p className="eyebrow">DAILY ROUTE OPERATIONS</p><h1>DRO</h1><p className="page-intro">Browse route plans by operational date and node-worker snapshot.</p></div>
       <div className="header-actions"><button type="button" className="secondary" disabled={loading} onClick={() => void refreshCurrent()}>{loading ? "Refreshing…" : "↻ Refresh"}</button></div>
     </header>
@@ -261,20 +261,19 @@ export default function DroPage() {
         <div className="fleet-head"><div><h2>Route list</h2><p>{snapshot ? `Source timestamp: ${formatTimestamp(snapshot.sourceTimestamp)}` : "Loading the selected route rows."}</p></div><label className="search">⌕ <input value={search} onChange={event => setSearch(event.target.value)} aria-label="Search DRO routes" placeholder="Search route, WA, or type" /></label></div>
         <div className="table-wrap">
           <table className="dro-table">
-            <thead><tr><th>ROUTE</th><th>WORK AREA</th><th>CUBE / CAPACITY</th><th>PACKAGES</th><th>STOPS</th><th>ROUTE DETAILS</th><th>STATUS</th></tr></thead>
+            <colgroup><col className="dro-route-column" /><col className="dro-capacity-column" /><col className="dro-packages-column" /><col className="dro-stops-column" /><col className="dro-details-column" /></colgroup>
+            <thead><tr><th>ROUTE</th><th>CUBE / CAPACITY</th><th>PACKAGES</th><th><span className="dro-stops-heading">STOPS<small>Total | PU | Combo</small></span></th><th>ROUTE DETAILS</th></tr></thead>
             <tbody>
-              {loading && !snapshot ? <tr><td colSpan={7} className="empty">Loading DRO routes…</td></tr> : visibleRows.length === 0 ? <tr><td colSpan={7} className="empty">{data.rows.length ? "No routes match your search." : "The selected snapshot does not contain route rows."}</td></tr> : visibleRows.map(row => {
+              {loading && !snapshot ? <tr><td colSpan={5} className="empty">Loading DRO routes…</td></tr> : visibleRows.length === 0 ? <tr><td colSpan={5} className="empty">{data.rows.length ? "No routes match your search." : "The selected snapshot does not contain route rows."}</td></tr> : visibleRows.map(row => {
                 const routeNumber = row.routeNumber || row.registeredRouteNumber;
                 const color = colorFor(routeNumber);
                 const capacityPercent = row.vehicleCapacity > 0 ? Math.round((row.usedCapacity / row.vehicleCapacity) * 100) : 0;
                 return <tr key={row.id} className={row.warning ? "dro-warning-row" : ""}>
                   <td>{routeNumber ? <strong className="route-number-badge" style={{ backgroundColor: color, color: routeTextColor(color) }}>{routeNumber}</strong> : <span className="route-unassigned">Unmapped</span>}</td>
-                  <td><div className="dro-cell-stack"><strong>{row.displayWaNumber || row.rawWaNumber}</strong>{row.displayWaNumber && <small>Source: {row.rawWaNumber}</small>}</div></td>
-                  <td><div className="dro-capacity"><strong>{formatNumber(row.usedCapacity)} / {formatNumber(row.vehicleCapacity)}</strong><span><i style={{ width: `${Math.min(capacityPercent, 100)}%` }} /></span><small>{formatNumber(row.deliveryCube)} del · {formatNumber(row.pickupCube)} p/u · {formatNumber(row.combinationCube)} combo</small></div></td>
-                  <td><div className="dro-cell-stack"><strong>{formatNumber(row.totalPackages)}</strong><small>{row.deliveryPackages} del · {row.pickupPackages} p/u · {row.combinationPackages} combo</small></div></td>
-                  <td><div className="dro-cell-stack"><strong>{formatNumber(row.totalStops)}</strong><small>{row.deliveryStops} del · {row.pickupStops} p/u · {row.combinationStops} combo</small></div></td>
-                  <td><div className="dro-cell-stack"><strong>{row.routeType || "Not provided"}</strong><small>{row.routeTime || "No route time"}{row.distance !== null ? ` · ${formatNumber(row.distance)} mi` : ""}</small></div></td>
-                  <td>{row.warning ? <span className="dro-warning-badge">! Capacity</span> : <span className="dro-normal-badge">Normal</span>}</td>
+                  <td><div className="dro-capacity"><strong>{formatNumber(row.usedCapacity)} / {formatNumber(row.vehicleCapacity)}</strong><span aria-hidden="true"><i style={{ width: `${Math.min(capacityPercent, 100)}%` }} /></span>{row.warning && <span className="sr-only">Capacity warning</span>}</div></td>
+                  <td><strong className="dro-primary-value">{formatNumber(row.totalPackages)}</strong></td>
+                  <td><div className="dro-stop-values" aria-label={`${row.totalStops} total stops, ${row.pickupStops} pickup stops, ${row.combinationStops} combination stops`}><strong>{row.totalStops}</strong><span>|</span><strong>{row.pickupStops}</strong><span>|</span><strong>{row.combinationStops}</strong></div></td>
+                  <td><div className="dro-route-details"><strong>{row.routeTime || "—"}</strong><span>•</span><strong>{row.distance !== null ? `${formatNumber(row.distance)} mi` : "—"}</strong></div></td>
                 </tr>;
               })}
             </tbody>
