@@ -135,3 +135,24 @@ export async function getLatestDroSnapshot(database: Database = getDb()) {
     .orderBy(desc(droSnapshots.operationalDate), desc(droSnapshots.capturedAt), desc(droSnapshots.id)).limit(1);
   return snapshot ? getDroSnapshotById(snapshot.id, database) : null;
 }
+
+export async function getLatestSuccessfulDroSnapshot(database: Database = getDb()) {
+  const [snapshot] = await database.select().from(droSnapshots)
+    .where(sql`LOWER(${droSnapshots.status}) IN ('success', 'complete')`)
+    .orderBy(desc(droSnapshots.operationalDate), desc(droSnapshots.capturedAt), desc(droSnapshots.id)).limit(1);
+  return snapshot ? getDroSnapshotById(snapshot.id, database) : null;
+}
+
+export async function getLatestSuccessfulDroSummary(database: Database = getDb()) {
+  const result = await getLatestSuccessfulDroSnapshot(database);
+  if (!result) return null;
+  return {
+    snapshotId: result.snapshot.id,
+    operationalDate: result.snapshot.operationalDate,
+    capturedAt: result.snapshot.capturedAt,
+    routeCount: result.rows.length,
+    totalPackages: result.rows.reduce((sum, row) => sum + row.totalPackages, 0),
+    totalStops: result.rows.reduce((sum, row) => sum + row.totalStops, 0),
+    capacityWarnings: result.rows.filter(row => row.warning).length,
+  };
+}

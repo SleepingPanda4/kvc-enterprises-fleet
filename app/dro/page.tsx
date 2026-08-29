@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { AppShell } from "../components/AppShell";
 import { routeTextColor } from "../routes/config";
 import { useRouteColors } from "../routes/useRouteColors";
+import { compareDroRouteNumbers, parseDroSortParams, type DroSortConfig, type DroSortKey } from "./sorting";
 
 type DroSnapshot = {
   id: number;
@@ -52,8 +54,6 @@ type DroDateResponse = {
   latestDate: string | null;
 };
 type DroDateBundle = { dateInfo: DroDateResponse; data: DroResponse; snapshotId: number | null };
-type DroSortKey = "route" | "capacity" | "packages" | "stops";
-type DroSortDirection = "asc" | "desc";
 
 async function requestJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { cache: "no-store" });
@@ -97,23 +97,9 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value);
 }
 
-function compareRouteNumbers(left: DroRouteRow, right: DroRouteRow, direction: DroSortDirection) {
-  const leftRoute = (left.routeNumber || left.registeredRouteNumber || "").trim();
-  const rightRoute = (right.routeNumber || right.registeredRouteNumber || "").trim();
-  const routeGroup = (route: string) => /^\d{3}$/.test(route) ? 0 : /^\d{4,}$/.test(route) ? 1 : 2;
-  const groupDifference = routeGroup(leftRoute) - routeGroup(rightRoute);
-  if (groupDifference !== 0) return groupDifference;
-
-  const leftNumber = /^\d+$/.test(leftRoute) ? Number(leftRoute) : null;
-  const rightNumber = /^\d+$/.test(rightRoute) ? Number(rightRoute) : null;
-  const comparison = leftNumber !== null && rightNumber !== null
-    ? leftNumber - rightNumber
-    : leftRoute.localeCompare(rightRoute, undefined, { numeric: true, sensitivity: "base" });
-  return direction === "asc" ? comparison : -comparison;
-}
-
 export default function DroPage() {
   const { colorFor } = useRouteColors();
+  const requestedSort = parseDroSortParams(useSearchParams());
   const [data, setData] = useState<DroResponse>({ snapshot: null, rows: [] });
   const [dateIndex, setDateIndex] = useState<DroDateIndex>({ dates: [], latestDate: null });
   const [dateInfo, setDateInfo] = useState<DroDateResponse | null>(null);
@@ -121,10 +107,10 @@ export default function DroPage() {
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
   const [followLatestSnapshot, setFollowLatestSnapshot] = useState(true);
   const [search, setSearch] = useState("");
-  const [sortKey, setSortKey] = useState<DroSortKey>("route");
-  const [sortDirection, setSortDirection] = useState<DroSortDirection>("asc");
+  const [manualSort, setManualSort] = useState<DroSortConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const { key: sortKey, direction: sortDirection } = manualSort || requestedSort;
 
   useEffect(() => {
     let cancelled = false;
@@ -231,7 +217,7 @@ export default function DroPage() {
       ? data.rows.filter(row => `${row.routeNumber || row.registeredRouteNumber || ""} ${row.rawWaNumber} ${row.displayWaNumber || ""} ${row.routeType || ""}`.toLowerCase().includes(query))
       : data.rows;
     return [...filteredRows].sort((left, right) => {
-      if (sortKey === "route") return compareRouteNumbers(left, right, sortDirection);
+      if (sortKey === "route") return compareDroRouteNumbers(left.routeNumber || left.registeredRouteNumber, right.routeNumber || right.registeredRouteNumber, sortDirection);
       const leftValue = sortKey === "capacity" ? left.usedCapacity : sortKey === "packages" ? left.totalPackages : left.totalStops;
       const rightValue = sortKey === "capacity" ? right.usedCapacity : sortKey === "packages" ? right.totalPackages : right.totalStops;
       const difference = leftValue - rightValue;
@@ -241,11 +227,10 @@ export default function DroPage() {
 
   function changeSort(nextSortKey: DroSortKey) {
     if (nextSortKey === sortKey) {
-      setSortDirection(current => current === "asc" ? "desc" : "asc");
+      setManualSort({ key: nextSortKey, direction: sortDirection === "asc" ? "desc" : "asc" });
       return;
     }
-    setSortKey(nextSortKey);
-    setSortDirection("asc");
+    setManualSort({ key: nextSortKey, direction: "asc" });
   }
 
   function sortIndicator(key: DroSortKey) {

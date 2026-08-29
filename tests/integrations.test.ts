@@ -7,6 +7,8 @@ import test from "node:test";
 import { createClient } from "@libsql/client";
 import { parseHomebaseAssignment } from "../services/integrations/homebase-assignment";
 import { calculateDroMetrics } from "../services/integrations/dro-calculations";
+import { compareDroRouteNumbers, parseDroSortParams } from "../app/dro/sorting";
+import { DRO_OVERVIEW_LINKS } from "../app/overview/dro-links";
 
 const projectRoot = new URL("../", import.meta.url);
 
@@ -49,6 +51,22 @@ test("DRO totals and the exact 600-capacity warning rule are deterministic", () 
   assert.equal(calculateDroMetrics({ deliveryCube: 700, vehicleCapacity: 998 }).warning, false);
 });
 
+test("DRO overview links and URL sorting preserve the requested ordering", () => {
+  assert.deepEqual(DRO_OVERVIEW_LINKS, {
+    routes: "/dro?sort=route&direction=asc",
+    packages: "/dro?sort=packages&direction=desc",
+    stops: "/dro?sort=stops&direction=desc",
+    capacityWarnings: "/dro?sort=cube&direction=desc",
+  });
+  assert.deepEqual(parseDroSortParams(new URLSearchParams("sort=packages&direction=desc")), { key: "packages", direction: "desc" });
+  assert.deepEqual(parseDroSortParams(new URLSearchParams("sort=cube&direction=desc")), { key: "capacity", direction: "desc" });
+  assert.deepEqual(parseDroSortParams(new URLSearchParams("sort=invalid&direction=desc")), { key: "route", direction: "asc" });
+
+  const routes = ["1127", "617", "645", "621", "9804"];
+  assert.deepEqual([...routes].sort((left, right) => compareDroRouteNumbers(left, right, "asc")), ["617", "621", "645", "1127", "9804"]);
+  assert.deepEqual([...routes].sort((left, right) => compareDroRouteNumbers(left, right, "desc")), ["645", "621", "617", "9804", "1127"]);
+});
+
 test("Homebase upserts by shift ID and DRO imports retain historical snapshots", async () => {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "kvc-integrations-"));
   const databasePath = path.join(temporaryDirectory, "fleet.db");
@@ -64,6 +82,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
       getDroSnapshotById,
       getDroSnapshotsForDate,
       getLatestDroSnapshot,
+      getLatestSuccessfulDroSummary,
       listDroOperationalDates,
     } = await import("../services/integrations/dro");
     const { closeDb } = await import("../db/index");
@@ -109,7 +128,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     });
     const newestDaySnapshot = await createDroSnapshot({
       operationalDate: "2026-08-31", capturedAt: "2026-08-31T01:00:00Z", stationId: "KVC", serviceAreaId: "STL", status: "complete",
-      rows: [{ routeNumber: "621", rawWaNumber: "WA-NEXT", deliveryCube: 700, vehicleCapacity: 998 }],
+      rows: [{ routeNumber: "621", rawWaNumber: "WA-NEXT", deliveryCube: 700, vehicleCapacity: 998, deliveryPackages: 10, pickupPackages: 2, combinationPackages: 3, deliveryStops: 8, pickupStops: 1, combinationStops: 2 }],
     });
     const snapshots = await client.execute("SELECT COUNT(*) AS count FROM dro_snapshots WHERE operational_date = '2026-08-29'");
     assert.equal(Number(snapshots.rows[0].count), 2);
@@ -141,6 +160,30 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     assert.equal(latest?.snapshot.id, newestDaySnapshot.id);
     assert.equal(latest?.snapshot.operationalDate, "2026-08-31");
     assert.equal(latest?.rows[0].warning, false);
+
+    await createDroSnapshot({
+      operationalDate: "2026-09-02", capturedAt: "2026-09-02T02:00:00Z", stationId: "KVC", serviceAreaId: "STL", status: "failed",
+      rows: [{ routeNumber: "9804", rawWaNumber: "WA-FAILED", deliveryCube: 500, vehicleCapacity: 600, deliveryPackages: 999, deliveryStops: 999 }],
+    });
+    assert.deepEqual(await getLatestSuccessfulDroSummary(), {
+      snapshotId: newestDaySnapshot.id,
+      operationalDate: "2026-08-31",
+      capturedAt: "2026-08-31T01:00:00Z",
+      routeCount: 1,
+      totalPackages: 15,
+      totalStops: 11,
+      capacityWarnings: 0,
+    });
+
+    const { getOverviewData } = await import("../services/overview");
+    const overview = await getOverviewData();
+    const vehicleTotal = await client.execute("SELECT COUNT(*) AS count FROM vehicles");
+    const teamTotal = await client.execute("SELECT COUNT(*) AS count FROM team_members");
+    const openIssueTotal = await client.execute("SELECT COUNT(*) AS count FROM issues WHERE status = 'open'");
+    assert.equal(overview.vehicleCount, Number(vehicleTotal.rows[0].count));
+    assert.equal(overview.teamCount, Number(teamTotal.rows[0].count));
+    assert.equal(overview.openIssues.length, Number(openIssueTotal.rows[0].count));
+    assert.equal(overview.droSummary?.snapshotId, newestDaySnapshot.id);
 
     process.env.DRO_INGEST_TOKEN = "test-ingest-token";
     const { POST: ingestDroSnapshot } = await import("../app/api/internal/dro/snapshot/route");
