@@ -114,7 +114,9 @@ echo "Installing dependencies and building the staged release..."
 (
   cd "${stage}"
   runuser -u kvcfleet -- npm install --no-audit --no-fund
-  runuser -u kvcfleet -- env DATABASE_URL="file:${data_dir}/fleet.db" npm run build
+  # Keep the staged Vite build within the 2 GB LXC's available memory. This
+  # affects only deployment compilation, never the production service.
+  runuser -u kvcfleet -- env DATABASE_URL="file:${data_dir}/fleet.db" NODE_OPTIONS="--max-old-space-size=512" npm run build
   runuser -u kvcfleet -- npm prune --omit=dev
 )
 

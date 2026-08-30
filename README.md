@@ -106,6 +106,10 @@ timestamped database backup in `/var/backups/kvc-fleet`. It automatically
 restores the previous application and database if migration, startup, or the
 health check fails.
 
+The deployment and first-install builds cap Node's V8 build heap at 512 MB so
+they fit in the 2 GB KVC LXC without requiring swap. This cap applies only while
+compiling the release; the running service remains unchanged.
+
 To validate packaging locally without connecting to the LXC:
 
 ```powershell
