@@ -245,6 +245,7 @@ const statements = [
     act_pu_pkgs INTEGER,
     ils_percent REAL,
     all_status_code_pkgs INTEGER,
+    driver_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
   )`,
   "CREATE INDEX IF NOT EXISTS mgba_dsw_route_rows_snapshot_idx ON mgba_dsw_route_rows (snapshot_id)",
@@ -318,6 +319,9 @@ try {
     await client.execute("ALTER TABLE schedule_entries ADD COLUMN notes TEXT");
   }
   const mgbaRouteRowColumns = await client.execute("PRAGMA table_info(mgba_dsw_route_rows)");
+  if (!mgbaRouteRowColumns.rows.some(row => String(row.name) === "driver_order")) {
+    await client.execute("ALTER TABLE mgba_dsw_route_rows ADD COLUMN driver_order INTEGER NOT NULL DEFAULT 0");
+  }
   if (!mgbaRouteRowColumns.rows.some(row => String(row.name) === "status_packages_state")) {
     await client.execute("ALTER TABLE mgba_dsw_route_rows ADD COLUMN status_packages_state TEXT NOT NULL DEFAULT 'not_applicable'");
     await client.execute("UPDATE mgba_dsw_route_rows SET status_packages_state = 'failed' WHERE COALESCE(all_status_code_pkgs, 0) > 0");

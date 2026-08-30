@@ -20,7 +20,7 @@ function row(value: unknown, index: number): MgbaDswRouteInput {
     routeNumber: text(source.route, `${prefix}.route`, false, 80), rawRoute: text(source.rawRoute, `${prefix}.rawRoute`, false, 80), dst: text(source.dst, `${prefix}.dst`),
     vscanPkgs: number(source.vscanPkgs, `${prefix}.vscanPkgs`), delStops: number(source.delStops, `${prefix}.delStops`), puStops: number(source.puStops, `${prefix}.puStops`), diff: number(source.diff, `${prefix}.diff`),
     actDelStops: number(source.actDelStops, `${prefix}.actDelStops`), actDelPkgs: number(source.actDelPkgs, `${prefix}.actDelPkgs`), actPuStops: number(source.actPuStops, `${prefix}.actPuStops`), actPuPkgs: number(source.actPuPkgs, `${prefix}.actPuPkgs`),
-    ilsPercent: number(source.ilsPercent, `${prefix}.ilsPercent`, false), allStatusCodePkgs: count, statusPackagesState, statusPackages };
+    ilsPercent: number(source.ilsPercent, `${prefix}.ilsPercent`, false), allStatusCodePkgs: count, driverOrder: number(source.driverOrder, `${prefix}.driverOrder`) ?? 0, statusPackagesState, statusPackages };
 }
 export function parseMgbaDswPayload(value: unknown): MgbaDswSnapshotInput {
   const source = object(value, "Request body"); const operationalDate = date(source.operationalDate, "operationalDate"); const dswDate = text(source.dswDate, "dswDate", true, 20) as string;

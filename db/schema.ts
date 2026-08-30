@@ -256,6 +256,7 @@ export const mgbaDswRouteRows = sqliteTable("mgba_dsw_route_rows", {
   actPuPkgs: integer("act_pu_pkgs"),
   ilsPercent: real("ils_percent"),
   allStatusCodePkgs: integer("all_status_code_pkgs"),
+  driverOrder: integer("driver_order").notNull().default(0),
   statusPackagesState: text("status_packages_state", { enum: ["not_applicable", "captured", "incomplete", "failed"] }).notNull().default("not_applicable"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, table => [

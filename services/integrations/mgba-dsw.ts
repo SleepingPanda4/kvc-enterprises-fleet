@@ -1,4 +1,4 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { asc, desc, eq, sql } from "drizzle-orm";
 import { getDb, type Database } from "../../db";
 import { mgbaDswRouteRows, mgbaDswSnapshots, mgbaDswStatusPackages, routes } from "../../db/schema";
 import { mgbaDswRoutesAreIdentical, type ComparableMgbaDswRoute } from "./mgba-dsw-deduplication";
@@ -7,7 +7,7 @@ import { ensureRoute } from "./routes";
 
 export type MgbaStatusPackageCaptureState = "not_applicable" | "captured" | "incomplete" | "failed";
 export type MgbaDswStatusPackageInput = { packageNumber: number; additionalInfo: string | null; visionLabel: string | null; trackingId: string | null; destinationAddress: string | null; vehicleNumber: string | null; vsaStatusCode: string | null; starStatusCode: string | null; starScanTime: string | null; isGreyedOut: boolean };
-export type MgbaDswRouteInput = ComparableMgbaDswRoute & { statusPackagesState?: MgbaStatusPackageCaptureState; statusPackages?: MgbaDswStatusPackageInput[] };
+export type MgbaDswRouteInput = ComparableMgbaDswRoute & { driverOrder?: number; statusPackagesState?: MgbaStatusPackageCaptureState; statusPackages?: MgbaDswStatusPackageInput[] };
 export type MgbaDswSnapshotInput = { operationalDate: string; dswDate: string; capturedAt: string; source: string; routeCount: number; routes: MgbaDswRouteInput[] };
 let mgbaSnapshotQueue: Promise<void> = Promise.resolve();
 
@@ -49,7 +49,7 @@ async function withMgbaSnapshotLock<T>(work: () => Promise<T>) {
 
 export async function createMgbaDswSnapshot(input: MgbaDswSnapshotInput, database: Database = getDb()) {
   return withMgbaSnapshotLock(async () => {
-    const prepared = input.routes.map(inputRow => ({ ...inputRow, ...normalizeMgbaDswRoute(inputRow), statusPackagesState: inputRow.statusPackagesState || (inputRow.allStatusCodePkgs && inputRow.allStatusCodePkgs > 0 ? "failed" : "not_applicable"), statusPackages: inputRow.statusPackages || [] }));
+    const prepared = input.routes.map(inputRow => ({ ...inputRow, ...normalizeMgbaDswRoute(inputRow), driverOrder: inputRow.driverOrder ?? 0, statusPackagesState: inputRow.statusPackagesState || (inputRow.allStatusCodePkgs && inputRow.allStatusCodePkgs > 0 ? "failed" : "not_applicable"), statusPackages: inputRow.statusPackages || [] }));
     const [newest] = await database.select().from(mgbaDswSnapshots)
       .where(eq(mgbaDswSnapshots.operationalDate, input.operationalDate)).orderBy(desc(mgbaDswSnapshots.capturedAt), desc(mgbaDswSnapshots.id)).limit(1);
     if (newest) {
@@ -101,8 +101,8 @@ export async function getMgbaDswRouteRows(snapshotId: number, database: Database
     routeNumber: mgbaDswRouteRows.routeNumber, rawRoute: mgbaDswRouteRows.rawRoute, dst: mgbaDswRouteRows.dst, vscanPkgs: mgbaDswRouteRows.vscanPkgs,
     delStops: mgbaDswRouteRows.delStops, puStops: mgbaDswRouteRows.puStops, diff: mgbaDswRouteRows.diff, actDelStops: mgbaDswRouteRows.actDelStops,
     actDelPkgs: mgbaDswRouteRows.actDelPkgs, actPuStops: mgbaDswRouteRows.actPuStops, actPuPkgs: mgbaDswRouteRows.actPuPkgs,
-    ilsPercent: mgbaDswRouteRows.ilsPercent, allStatusCodePkgs: mgbaDswRouteRows.allStatusCodePkgs, statusPackagesState: mgbaDswRouteRows.statusPackagesState,
-  }).from(mgbaDswRouteRows).leftJoin(routes, eq(mgbaDswRouteRows.routeId, routes.id)).where(eq(mgbaDswRouteRows.snapshotId, snapshotId));
+    ilsPercent: mgbaDswRouteRows.ilsPercent, allStatusCodePkgs: mgbaDswRouteRows.allStatusCodePkgs, driverOrder: mgbaDswRouteRows.driverOrder, statusPackagesState: mgbaDswRouteRows.statusPackagesState,
+  }).from(mgbaDswRouteRows).leftJoin(routes, eq(mgbaDswRouteRows.routeId, routes.id)).where(eq(mgbaDswRouteRows.snapshotId, snapshotId)).orderBy(asc(mgbaDswRouteRows.driverOrder), asc(mgbaDswRouteRows.id));
 }
 export async function getMgbaDswSnapshotById(snapshotId: number, database: Database = getDb()) {
   const [snapshot] = await database.select().from(mgbaDswSnapshots).where(eq(mgbaDswSnapshots.id, snapshotId)).limit(1);
