@@ -357,7 +357,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
       getLatestSuccessfulDroSummary,
       listDroOperationalDates,
     } = await import("../services/integrations/dro");
-    const { chicagoCalendarDate, chicagoHourKey, createMgbaDswSnapshot, getMgbaDswDateNavigation, getMgbaDswSnapshotById, getMgbaDswSnapshotsForDate, listMgbaDswOperationalDates } = await import("../services/integrations/mgba-dsw");
+    const { chicagoCalendarDate, chicagoHourKey, createMgbaDswSnapshot, getMgbaDswDateNavigation, getMgbaDswSnapshotById, getMgbaDswSnapshotsForDate, getMgbaDswStatusPackagesForRouteRow, listMgbaDswOperationalDates } = await import("../services/integrations/mgba-dsw");
     const { closeDb } = await import("../db/index");
 
     const client = createClient({ url: databaseUrl });
@@ -381,11 +381,26 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     assert.equal(mgbaRows.find(row => row.driverName === "Actual Driver")?.vehicleNumber, "415659 431928");
     assert.equal(mgbaRows.find(row => row.driverName === "Actual Driver")?.puStops, null);
     assert.equal(mgbaRows.find(row => row.driverName === "Actual Driver")?.allStatusCodePkgs, 8);
+    const multiDriver = await createMgbaDswSnapshot({ ...mgbaPayload, operationalDate: "2026-08-30", dswDate: "08/30/2026", capturedAt: "2026-08-30T16:00:00.000Z", routes: [
+      { ...mgbaPayload.routes[0], driverName: "Driver A", allStatusCodePkgs: 1, statusPackagesState: "captured", statusPackages: [{ packageNumber: 1, additionalInfo: null, visionLabel: null, trackingId: "A", destinationAddress: null, vehicleNumber: null, vsaStatusCode: null, starStatusCode: null, starScanTime: null, isGreyedOut: false }] },
+      { ...mgbaPayload.routes[0], driverName: "Driver B", vehicleNumber: "B-vehicle", delStops: 22, allStatusCodePkgs: 1, statusPackagesState: "captured", statusPackages: [{ packageNumber: 1, additionalInfo: null, visionLabel: null, trackingId: "B", destinationAddress: null, vehicleNumber: null, vsaStatusCode: null, starStatusCode: null, starScanTime: null, isGreyedOut: true }] },
+      { ...mgbaPayload.routes[1], driverName: "Driver C", routeNumber: "625" },
+    ] });
+    const multiRows = (await getMgbaDswSnapshotById(multiDriver.id))?.rows || [];
+    const route621 = multiRows.filter(row => row.routeNumber === "621");
+    assert.equal(route621.length, 2, "Multiple driver-populated DSW rows for one route remain independent");
+    assert.notEqual(route621[0].id, route621[1].id);
+    assert.equal(route621.find(row => row.driverName === "Driver B")?.delStops, 22);
+    assert.equal((await getMgbaDswStatusPackagesForRouteRow(route621.find(row => row.driverName === "Driver A")!.id))?.packages[0]?.trackingId, "A");
+    assert.equal((await getMgbaDswStatusPackagesForRouteRow(route621.find(row => row.driverName === "Driver B")!.id))?.packages[0]?.isGreyedOut, true);
+    assert.notEqual((await createMgbaDswSnapshot({ ...multiDriver, capturedAt: "2026-08-30T16:10:00.000Z", routes: multiDriver.routeCount ? [
+      { ...mgbaPayload.routes[0], driverName: "Driver A", allStatusCodePkgs: 1 }, { ...mgbaPayload.routes[1], driverName: "Driver C", routeNumber: "625" },
+    ] : [] })).id, multiDriver.id, "Removing one duplicate route driver is a snapshot change");
     const chicagoToday = new Date("2026-08-29T18:00:00.000Z");
     assert.equal(chicagoCalendarDate(chicagoToday), "2026-08-29");
     assert.deepEqual((await getMgbaDswSnapshotsForDate("2026-08-29", undefined, chicagoToday)).map(snapshot => snapshot.id), [changedMgba.id, firstMgba.id], "Today retains every changed snapshot, newest first");
     assert.deepEqual((await getMgbaDswSnapshotsForDate("2026-08-29", undefined, new Date("2026-08-30T18:00:00.000Z"))).map(snapshot => snapshot.id), [changedMgba.id], "Historical reads retain only the latest snapshot in each Chicago hour");
-    assert.deepEqual(await getMgbaDswDateNavigation("2026-08-29"), { previousDate: null, nextDate: null, latestDate: "2026-08-29" });
+    assert.deepEqual(await getMgbaDswDateNavigation("2026-08-29"), { previousDate: null, nextDate: "2026-08-30", latestDate: "2026-08-30" });
     assert.equal((await listMgbaDswOperationalDates())[0]?.snapshotCount, 2);
     const utcBoundaryFirst = await createMgbaDswSnapshot({ ...mgbaPayload, operationalDate: "2026-08-28", dswDate: "08/28/2026", capturedAt: "2026-08-29T03:50:00.000Z" });
     const utcBoundaryLatest = await createMgbaDswSnapshot({ ...mgbaPayload, operationalDate: "2026-08-28", dswDate: "08/28/2026", capturedAt: "2026-08-29T04:30:00.000Z", routes: mgbaPayload.routes.map((row, index) => index === 0 ? { ...row, allStatusCodePkgs: 10 } : row) });
