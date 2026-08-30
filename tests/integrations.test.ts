@@ -18,6 +18,7 @@ import { LiveDroRefreshGuard, loadCollectedDroView, requestLiveDroRefresh } from
 import { refetchHomebaseAssignments } from "../app/dro/homebase-refresh";
 import { selectedDroSnapshot, selectedSnapshotTimestamp } from "../app/dro/selected-snapshot";
 import { DRO_OVERVIEW_LINKS } from "../app/overview/dro-links";
+import { clearDroRouteSelection, selectDroRouteRow, selectedDroRouteRowId } from "../app/dro/row-selection";
 import { mgbaDswRoutesAreIdentical } from "../services/integrations/mgba-dsw-deduplication";
 import { normalizeMgbaDswRoute, normalizeMgbaRouteNumber } from "../services/integrations/mgba-dsw-normalization";
 import { MgbaCollectorError, requestMgbaCollection } from "../services/integrations/mgba-collector";
@@ -127,6 +128,19 @@ test("DRO calendar enables only available dates and navigates months safely", ()
   assert.equal(shiftDroCalendarMonth("2026-01", -1), "2025-12");
   const emptyMonth = buildDroCalendarMonth("2026-10", [], "");
   assert.equal(emptyMonth.days.filter(Boolean).every(day => day?.available === false), true);
+});
+
+test("DRO route selection remains singular, stable, and context-local", () => {
+  let selection = selectDroRouteRow(101, "2026-08-29", 11);
+  assert.equal(selectedDroRouteRowId(selection, "2026-08-29", 11), 101, "Clicking a row selects its stable snapshot-row ID");
+  selection = selectDroRouteRow(202, "2026-08-29", 11);
+  assert.equal(selectedDroRouteRowId(selection, "2026-08-29", 11), 202, "Selecting another row replaces the previous visual selection");
+  selection = selectDroRouteRow(202, "2026-08-29", 11);
+  assert.equal(selectedDroRouteRowId(selection, "2026-08-29", 11), 202, "Clicking the selected row keeps it selected");
+  assert.equal(selectedDroRouteRowId(selectDroRouteRow(303, "2026-08-29", 11), "2026-08-29", 11), 303, "Selection does not depend on the click target, so row controls can keep their native behavior");
+  assert.equal(selectedDroRouteRowId(selection, "2026-08-30", 11), null, "A date change clears the visible selection");
+  assert.equal(selectedDroRouteRowId(selection, "2026-08-29", 12), null, "A snapshot change clears the visible selection");
+  assert.equal(clearDroRouteSelection(), null);
 });
 
 test("DRO operational dates, refresh window, and deduplication use Chicago time", async () => {

@@ -13,6 +13,7 @@ import { selectedDroSnapshot, selectedSnapshotTimestamp } from "./selected-snaps
 import { compareDroRouteNumbers, getNextDroSort, parseDroSortParams, type DroSortConfig, type DroSortKey } from "./sorting";
 import { capacityUtilization, hasCapacityWarning } from "../../services/integrations/dro-calculations";
 import { DRO_REFRESH_WINDOW_MESSAGE, isDroManualRefreshAllowed } from "../../services/integrations/dro-operational-date";
+import { selectDroRouteRow, selectedDroRouteRowId, type DroRouteSelection } from "./row-selection";
 
 type DroSnapshot = {
   id: number;
@@ -136,6 +137,7 @@ export default function DroPage() {
   const [dateInfo, setDateInfo] = useState<DroDateResponse | null>(null);
   const [selectedDate, setSelectedDate] = useState("");
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
+  const [routeSelection, setRouteSelection] = useState<DroRouteSelection | null>(null);
   const [followLatestSnapshot, setFollowLatestSnapshot] = useState(true);
   const [search, setSearch] = useState("");
   const [manualSort, setManualSort] = useState<DroSortConfig | null>(null);
@@ -399,6 +401,7 @@ export default function DroPage() {
 
   const snapshot = selectedDroSnapshot(selectedSnapshotId, data.snapshot);
   const selectedRows = useMemo(() => snapshot ? data.rows : [], [data.rows, snapshot]);
+  const selectedRouteRowId = selectedDroRouteRowId(routeSelection, selectedDate, selectedSnapshotId);
 
   const visibleRows = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -499,7 +502,8 @@ export default function DroPage() {
                 const utilization = capacityUtilization(row.usedCapacity, row.vehicleCapacity);
                 const capacityPercent = utilization === null ? 0 : Math.max(0, utilization * 100);
                 const capacityWarning = hasCapacityWarning(row.usedCapacity, row.vehicleCapacity);
-                return <tr key={row.id} className={capacityWarning ? "dro-warning-row" : ""}>
+                const rowClassName = [capacityWarning ? "dro-warning-row" : "", selectedRouteRowId === row.id ? "dro-route-selected" : ""].filter(Boolean).join(" ");
+                return <tr key={row.id} className={rowClassName} aria-selected={selectedRouteRowId === row.id} onClick={() => setRouteSelection(selectDroRouteRow(row.id, selectedDate, selectedSnapshotId))}>
                   <td>{canManage && routeNumber ? <select className="dro-driver-select" aria-label={`Driver for route ${routeNumber}`} value={driver?.teamMemberId || ""} disabled={Boolean(savingAssignment) || assignmentsLoading || refetchingAssignments} title={driver?.homebase ? `Homebase: ${driver.homebase.rawAssignment}` : "No Homebase assignment"} onChange={event => void swapAssignment({ type: "route", routeNumber }, Number(event.target.value), driver?.teamMemberId)}><option value="" disabled>{assignmentsLoading ? "Loading assignments…" : "Unassigned"}</option>{assignmentBoard?.members.map(member => <option key={member.teamMemberId} value={member.teamMemberId}>{member.teamMemberId === driver?.teamMemberId ? member.name : `${member.name} — ${member.assignmentLabel}`}</option>)}</select> : <strong className="dro-driver-name" title={driver?.homebase ? `Homebase: ${driver.homebase.rawAssignment}` : undefined}>{assignmentsLoading ? "Loading assignments…" : driver?.name || "Unassigned"}</strong>}</td>
                   <td><span className="dro-driver-route-meta">{routeNumber ? <strong className="route-number-badge" style={{ backgroundColor: color, color: routeTextColor(color) }}>{routeNumber}</strong> : <span className="route-unassigned">Unmapped</span>}{driver?.source === "manual" && <span className="assignment-source" title={`Homebase: ${driver.homebase?.rawAssignment || "not assigned"}`}>Manual</span>}{canManage && driver?.source === "manual" && driver.homebase && <button type="button" className="restore-homebase" disabled={Boolean(savingAssignment) || refetchingAssignments} title={`Use Homebase assignment: ${driver.homebase.rawAssignment}`} onClick={() => void restoreHomebase(driver.teamMemberId)}>↺</button>}</span></td>
                   <td><div className="dro-capacity"><strong>{formatNumber(row.usedCapacity)} / {formatNumber(row.vehicleCapacity)}</strong><span aria-hidden="true"><i style={{ width: `${Math.min(capacityPercent, 100)}%` }} /></span>{capacityWarning && <span className="sr-only">Capacity warning</span>}</div></td>
