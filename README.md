@@ -265,6 +265,63 @@ systemctl daemon-reload
 systemctl restart kvc-fleet
 ```
 
+## Monitor / MGBA DSW integration
+
+The Monitor page stores immutable Daily Service Wk & Vision IBPR (DSW) snapshots
+received from the separate MGBA worker. It does not manage the worker, browser,
+or any FedEx authentication. Configure its ingestion secret in a separate,
+protected file on the LXC:
+
+```bash
+install -d -o root -g kvcfleet -m 0750 /etc/kvc-fleet
+printf '%s\n' 'MGBA_INGEST_TOKEN=replace-with-a-long-random-token' > /etc/kvc-fleet/mgba.env
+printf '%s\n' 'MGBA_WORKER_URL=http://127.0.0.1:3102' >> /etc/kvc-fleet/mgba.env
+chown root:kvcfleet /etc/kvc-fleet/mgba.env
+chmod 0640 /etc/kvc-fleet/mgba.env
+systemctl daemon-reload
+systemctl restart kvc-fleet
+```
+
+The external MGBA collector must POST completed snapshots to
+`POST /api/internal/mgba/snapshot` with `Authorization: Bearer
+<MGBA_INGEST_TOKEN>`. The request body is:
+
+```json
+{
+  "source": "MGBA_DSW",
+  "operationalDate": "2026-08-29",
+  "dswDate": "08/29/2026",
+  "capturedAt": "2026-08-29T16:00:00.000Z",
+  "routeCount": 1,
+  "routes": [{
+    "serviceArea": "631",
+    "waName": "Example WA",
+    "vehicleNumber": "415659 431928",
+    "driverName": "Driver Name",
+    "route": "621",
+    "rawRoute": "000621",
+    "dst": null,
+    "vscanPkgs": 120,
+    "delStops": 80,
+    "puStops": null,
+    "diff": 0,
+    "actDelStops": 74,
+    "actDelPkgs": 110,
+    "actPuStops": null,
+    "actPuPkgs": null,
+    "ilsPercent": 98.4,
+    "allStatusCodePkgs": 6
+  }]
+}
+```
+
+Blank source fields must be sent as `null`, not zero. `vehicleNumber` is text
+and may contain more than one ID. The application deduplicates identical route
+state for an operational day, preserving changed source snapshots as history.
+Fleet Managers may request a manual collection through the application; that
+server-side request proxies only to the localhost MGBA worker at
+`POST /collect?date=MM/DD/YYYY` and never exposes secrets to the browser.
+
 Authenticated read endpoints are available at:
 
 - `GET /api/routes` — route registry with current vehicle plus available driver

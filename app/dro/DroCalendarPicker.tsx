@@ -10,9 +10,10 @@ type DroCalendarPickerProps = {
   selectedDate: string;
   loading: boolean;
   onSelect: (date: string) => void;
+  dataLabel?: string;
 };
 
-export function DroCalendarPicker({ availableDates, selectedDate, loading, onSelect }: DroCalendarPickerProps) {
+export function DroCalendarPicker({ availableDates, selectedDate, loading, onSelect, dataLabel = "DRO" }: DroCalendarPickerProps) {
   const pickerRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [displayedMonth, setDisplayedMonth] = useState("");
@@ -50,7 +51,7 @@ export function DroCalendarPicker({ availableDates, selectedDate, loading, onSel
     onSelect(date);
   }
 
-  const triggerText = loading ? "Loading dates…" : selectedDate ? formatDroCalendarDate(selectedDate) : "No DRO dates";
+  const triggerText = loading ? "Loading dates…" : selectedDate ? formatDroCalendarDate(selectedDate) : `No ${dataLabel} dates`;
   return <div className="dro-calendar-picker" ref={pickerRef}>
     <button type="button" className="dro-calendar-trigger" disabled={disabled} aria-expanded={open} aria-haspopup="dialog" aria-controls="dro-calendar-dialog" onClick={toggleCalendar}><span aria-hidden="true">▣</span>{triggerText}</button>
     {open && calendar && <div className="dro-calendar-popover" id="dro-calendar-dialog" role="dialog" aria-modal="false" aria-labelledby="dro-calendar-title">
@@ -69,7 +70,7 @@ export function DroCalendarPicker({ availableDates, selectedDate, loading, onSel
           disabled={!day.available}
           aria-disabled={!day.available}
           aria-current={day.selected ? "date" : undefined}
-          aria-label={`${formatDroCalendarDate(day.date, true)} — ${day.available ? "DRO data available" : "No DRO data available"}`}
+          aria-label={`${formatDroCalendarDate(day.date, true)} — ${day.available ? `${dataLabel} data available` : `No ${dataLabel} data available`}`}
           onClick={() => selectDate(day.date)}
         >{day.day}</button> : <span className="dro-calendar-blank" aria-hidden="true" key={`blank-${index}`} />)}
       </div>

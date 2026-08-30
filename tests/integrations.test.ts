@@ -18,6 +18,10 @@ import { LiveDroRefreshGuard, loadCollectedDroView, requestLiveDroRefresh } from
 import { refetchHomebaseAssignments } from "../app/dro/homebase-refresh";
 import { selectedDroSnapshot, selectedSnapshotTimestamp } from "../app/dro/selected-snapshot";
 import { DRO_OVERVIEW_LINKS } from "../app/overview/dro-links";
+import { mgbaDswRoutesAreIdentical } from "../services/integrations/mgba-dsw-deduplication";
+import { normalizeMgbaDswRoute, normalizeMgbaRouteNumber } from "../services/integrations/mgba-dsw-normalization";
+import { MgbaCollectorError, requestMgbaCollection } from "../services/integrations/mgba-collector";
+import { MONITOR_SORT_KEYS, compareNullable, nextMonitorSort } from "../app/monitor/sorting";
 
 const projectRoot = new URL("../", import.meta.url);
 
@@ -63,6 +67,28 @@ test("DRO totals and capacity warnings use the actual vehicle capacity", () => {
   assert.equal(capacityUtilization(420, 420), 1);
   assert.equal(capacityUtilization(1, 0), null);
   assert.equal(hasCapacityWarning(0, 0), false);
+});
+
+test("MGBA DSW normalization, deduplication, sorting, and worker errors preserve source meaning", async () => {
+  const source = { serviceArea: null, waName: "  UNKNOWN AREA ", vehicleNumber: "415659 431928", driverName: " Driver One ", routeNumber: "000621", rawRoute: "000621", dst: null,
+    vscanPkgs: 0, delStops: 12, puStops: null, diff: 0, actDelStops: 10, actDelPkgs: 99, actPuStops: null, actPuPkgs: null, ilsPercent: 97.5, allStatusCodePkgs: 7 };
+  const normalized = normalizeMgbaDswRoute(source);
+  assert.equal(normalized.routeNumber, "621");
+  assert.equal(normalized.vehicleNumber, "415659 431928", "Multiple vehicle IDs remain source text");
+  assert.equal(normalized.puStops, null, "Blank source values remain null");
+  assert.notEqual(normalized.puStops, normalized.vscanPkgs, "Null is distinct from zero");
+  assert.equal(normalizeMgbaRouteNumber("0000"), "0");
+  assert.equal(mgbaDswRoutesAreIdentical([normalized], [{ ...normalized, allStatusCodePkgs: 8 }]), false, "Status packages are an independent source field");
+  assert.equal(mgbaDswRoutesAreIdentical([normalized, { ...normalized, driverName: "Driver Two" }], [{ ...normalized, driverName: "Driver Two" }, normalized]), true, "Row ordering does not affect deduplication");
+  assert.equal(compareNullable(null, 0, "asc"), 1);
+  assert.equal(nextMonitorSort(null, "vscan").direction, "desc");
+  assert.equal(MONITOR_SORT_KEYS.includes("vscan"), true);
+  assert.equal((MONITOR_SORT_KEYS as readonly string[]).includes("allStatusCodePkgs"), false, "All Status Code Pkgs is intentionally not sortable");
+  await assert.rejects(requestMgbaCollection("2026-08-29", { fetchImplementation: async () => Response.json({ error: "collection_in_progress" }, { status: 409 }) }), error => error instanceof MgbaCollectorError && error.code === "MGBA_COLLECTION_IN_PROGRESS");
+  await assert.rejects(requestMgbaCollection("2026-08-29", { fetchImplementation: async () => { throw new TypeError("offline"); } }), error => error instanceof MgbaCollectorError && error.code === "MGBA_WORKER_UNAVAILABLE");
+  let workerUrl = "";
+  await requestMgbaCollection("2026-08-29", { fetchImplementation: async input => { workerUrl = String(input); return Response.json({ ok: true, operationalDate: "2026-08-29" }); } });
+  assert.match(workerUrl, /date=08%2F29%2F2026$/);
 });
 
 test("DRO overview links and URL sorting preserve the requested ordering", () => {
@@ -311,10 +337,40 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
       getLatestSuccessfulDroSummary,
       listDroOperationalDates,
     } = await import("../services/integrations/dro");
+    const { createMgbaDswSnapshot, getMgbaDswDateNavigation, getMgbaDswSnapshotById, getMgbaDswSnapshotsForDate, listMgbaDswOperationalDates } = await import("../services/integrations/mgba-dsw");
     const { closeDb } = await import("../db/index");
 
     const client = createClient({ url: databaseUrl });
     integrationClient = client;
+    const mgbaPayload = {
+      operationalDate: "2026-08-29", dswDate: "08/29/2026", capturedAt: "2026-08-29T16:00:00.000Z", source: "MGBA_DSW", routeCount: 2,
+      routes: [
+        { serviceArea: "631", waName: "UNPLANNED WA", vehicleNumber: "415659 431928", driverName: "Actual Driver", routeNumber: "000621", rawRoute: "000621", dst: null, vscanPkgs: 0, delStops: 10, puStops: null, diff: 0, actDelStops: 9, actDelPkgs: 90, actPuStops: null, actPuPkgs: null, ilsPercent: 99.5, allStatusCodePkgs: 8 },
+        { serviceArea: null, waName: "Unknown route driver", vehicleNumber: "1127 204004", driverName: "Not In DRO", routeNumber: "009999", rawRoute: "009999", dst: "R", vscanPkgs: 30, delStops: 20, puStops: 1, diff: -1, actDelStops: 18, actDelPkgs: 80, actPuStops: 1, actPuPkgs: 2, ilsPercent: 88, allStatusCodePkgs: 6 },
+      ],
+    };
+    const firstMgba = await createMgbaDswSnapshot(mgbaPayload);
+    const reorderedMgba = await createMgbaDswSnapshot({ ...mgbaPayload, capturedAt: "2026-08-29T16:10:00.000Z", routes: [...mgbaPayload.routes].reverse() });
+    assert.equal(reorderedMgba.id, firstMgba.id, "Captured time alone and reordered rows do not create a new Monitor snapshot");
+    assert.equal(reorderedMgba.deduplicated, true);
+    const changedMgba = await createMgbaDswSnapshot({ ...mgbaPayload, capturedAt: "2026-08-29T16:20:00.000Z", routes: mgbaPayload.routes.map((row, index) => index === 0 ? { ...row, allStatusCodePkgs: 9 } : row) });
+    assert.notEqual(changedMgba.id, firstMgba.id, "A changed source field creates a new Monitor snapshot");
+    const mgbaRows = (await getMgbaDswSnapshotById(firstMgba.id))?.rows || [];
+    assert.equal(mgbaRows.length, 2, "DSW drivers absent from DRO are retained");
+    assert.equal(mgbaRows.find(row => row.driverName === "Not In DRO")?.routeNumber, "9999", "Unknown routes remain available in Monitor");
+    assert.equal(mgbaRows.find(row => row.driverName === "Actual Driver")?.vehicleNumber, "415659 431928");
+    assert.equal(mgbaRows.find(row => row.driverName === "Actual Driver")?.puStops, null);
+    assert.equal(mgbaRows.find(row => row.driverName === "Actual Driver")?.allStatusCodePkgs, 8);
+    assert.equal((await getMgbaDswSnapshotsForDate("2026-08-29")).length, 2);
+    assert.deepEqual(await getMgbaDswDateNavigation("2026-08-29"), { previousDate: null, nextDate: null, latestDate: "2026-08-29" });
+    assert.equal((await listMgbaDswOperationalDates())[0]?.snapshotCount, 2);
+    process.env.MGBA_INGEST_TOKEN = "mgba-ingest-test-token";
+    const { POST: ingestMgba } = await import("../app/api/internal/mgba/snapshot/route");
+    const mgbaRequest = (body: unknown, token?: string) => new Request("http://localhost/api/internal/mgba/snapshot", { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
+    assert.equal((await ingestMgba(mgbaRequest(mgbaPayload))).status, 401);
+    assert.equal((await ingestMgba(mgbaRequest({ ...mgbaPayload, routes: [{}] }, "mgba-ingest-test-token"))).status, 400);
+    const ingestedMgba = await ingestMgba(mgbaRequest({ ...mgbaPayload, operationalDate: "2026-08-30", dswDate: "08/30/2026", capturedAt: "2026-08-30T16:00:00.000Z" }, "mgba-ingest-test-token"));
+    assert.equal(ingestedMgba.status, 201);
     const admin = await client.execute("SELECT id FROM team_members WHERE email = 'admin@admin.com'");
     const adminTeamMemberId = Number(admin.rows[0].id);
     await upsertHomebaseUserMapping({ userId: "user-20", teamMemberId: adminTeamMemberId, displayName: "Lincoln Barker" });
@@ -773,6 +829,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
   } finally {
     delete process.env.DATABASE_URL;
     delete process.env.DRO_INGEST_TOKEN;
+    delete process.env.MGBA_INGEST_TOKEN;
     delete process.env.HOMEBASE_INGEST_TOKEN;
     if (integrationClient) {
       try { await integrationClient.close(); } catch { /* best-effort test cleanup */ }

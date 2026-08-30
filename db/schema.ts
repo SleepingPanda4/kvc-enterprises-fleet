@@ -221,6 +221,47 @@ export const authSessions = sqliteTable("auth_sessions", {
   lastUsedAt: text("last_used_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const mgbaDswSnapshots = sqliteTable("mgba_dsw_snapshots", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  operationalDate: text("operational_date").notNull(),
+  dswDate: text("dsw_date").notNull(),
+  capturedAt: text("captured_at").notNull(),
+  source: text("source").notNull(),
+  routeCount: integer("route_count").notNull(),
+  importedAt: text("imported_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, table => [
+  index("mgba_dsw_snapshots_operational_date_idx").on(table.operationalDate),
+  index("mgba_dsw_snapshots_captured_at_idx").on(table.capturedAt),
+  index("mgba_dsw_snapshots_operational_date_captured_at_idx").on(table.operationalDate, table.capturedAt),
+]);
+
+export const mgbaDswRouteRows = sqliteTable("mgba_dsw_route_rows", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  snapshotId: integer("snapshot_id").notNull().references(() => mgbaDswSnapshots.id, { onDelete: "cascade" }),
+  routeId: integer("route_id").references(() => routes.id, { onDelete: "set null" }),
+  serviceArea: text("service_area"),
+  waName: text("wa_name"),
+  vehicleNumber: text("vehicle_number"),
+  driverName: text("driver_name").notNull(),
+  routeNumber: text("route_number"),
+  rawRoute: text("raw_route"),
+  dst: text("dst"),
+  vscanPkgs: integer("vscan_pkgs"),
+  delStops: integer("del_stops"),
+  puStops: integer("pu_stops"),
+  diff: integer("diff"),
+  actDelStops: integer("act_del_stops"),
+  actDelPkgs: integer("act_del_pkgs"),
+  actPuStops: integer("act_pu_stops"),
+  actPuPkgs: integer("act_pu_pkgs"),
+  ilsPercent: real("ils_percent"),
+  allStatusCodePkgs: integer("all_status_code_pkgs"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, table => [
+  index("mgba_dsw_route_rows_snapshot_idx").on(table.snapshotId),
+  index("mgba_dsw_route_rows_route_idx").on(table.routeId),
+]);
+
 export const authTokens = sqliteTable("auth_tokens", {
   tokenHash: text("token_hash").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
