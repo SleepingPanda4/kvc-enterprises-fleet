@@ -147,6 +147,44 @@ chmod 0640 /etc/kvc-fleet/homebase.env
 systemctl restart kvc-fleet
 ```
 
+Fleet Managers can use **Refetch Assignments** from the DRO page. This asks a
+separate localhost-only Homebase collector control service to collect a fresh
+schedule using its already-running authenticated Chrome/CDP session; Fleet
+Manager never starts or restarts Chrome itself. Configure the matching control
+token in the protected same file:
+
+```text
+HOMEBASE_COLLECTOR_URL=http://127.0.0.1:3102/collect
+HOMEBASE_COLLECTOR_TOKEN=the-same-secret-configured-in-the-external-collector
+```
+
+The external collector's `POST /collect` control endpoint must only listen on
+`127.0.0.1`, require `Authorization: Bearer <HOMEBASE_COLLECTOR_TOKEN>`, reject
+overlapping requests with `409` and `{"error":"collection_in_progress"}`, reuse
+its persistent Homebase Chrome session, post the collected schedule to Fleet
+Manager's existing internal ingestion endpoint, then return:
+
+```json
+{
+  "ok": true,
+  "rangeStart": "2026-08-24",
+  "rangeEnd": "2026-08-30",
+  "collectedAt": "2026-08-29T01:00:00.000Z",
+  "imported": 0,
+  "updated": 0,
+  "unchanged": 0,
+  "removed": 0,
+  "dates": ["2026-08-29"],
+  "routeAssignments": 0,
+  "specialAssignments": 0
+}
+```
+
+Fleet Manager exposes `POST /api/homebase/refresh` to Fleet Managers only. It
+is a server-side proxy to that local control service and never sends tokens to
+the browser. This operation refreshes Homebase staffing only; it never creates
+or refreshes a DRO snapshot.
+
 Safe example request body:
 
 ```json

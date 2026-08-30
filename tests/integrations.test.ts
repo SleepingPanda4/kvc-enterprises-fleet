@@ -9,9 +9,11 @@ import { parseHomebaseAssignment } from "../services/integrations/homebase-assig
 import { calculateDroMetrics } from "../services/integrations/dro-calculations";
 import { droRoutesAreIdentical, shouldDeduplicateDroSnapshot, type ComparableDroRoute } from "../services/integrations/dro-deduplication";
 import { DroCollectorError, requestDroCollection } from "../services/integrations/dro-collector";
+import { HomebaseCollectorError, requestHomebaseCollection } from "../services/integrations/homebase-collector";
 import { compareDroRouteNumbers, getNextDroSort, parseDroSortParams } from "../app/dro/sorting";
 import { buildDroCalendarMonth, isDroDateAvailable, shiftDroCalendarMonth } from "../app/dro/calendar";
 import { LiveDroRefreshGuard, loadCollectedDroView, requestLiveDroRefresh } from "../app/dro/live-refresh";
+import { refetchHomebaseAssignments } from "../app/dro/homebase-refresh";
 import { selectedDroSnapshot, selectedSnapshotTimestamp } from "../app/dro/selected-snapshot";
 import { DRO_OVERVIEW_LINKS } from "../app/overview/dro-links";
 
@@ -164,6 +166,46 @@ test("Fleet Manager collector client keeps authorization server-side and returns
   } finally {
     if (previousToken === undefined) delete process.env.DRO_INGEST_TOKEN;
     else process.env.DRO_INGEST_TOKEN = previousToken;
+  }
+});
+
+test("Homebase assignment refetch uses the local collector path and never starts a DRO collection", async () => {
+  const previousToken = process.env.HOMEBASE_COLLECTOR_TOKEN;
+  process.env.HOMEBASE_COLLECTOR_TOKEN = "homebase-control-test-token";
+  try {
+    const collectorUrls: string[] = [];
+    const result = await requestHomebaseCollection({ fetchImplementation: async (input, init) => {
+      collectorUrls.push(String(input));
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer homebase-control-test-token");
+      return Response.json({ ok: true, rangeStart: "2026-08-24", rangeEnd: "2026-08-30", collectedAt: "2026-08-29T01:00:00.000Z", imported: 2, updated: 1, unchanged: 3, removed: 0, dates: ["2026-08-29"], routeAssignments: 4, specialAssignments: 1 });
+    } });
+    assert.equal(collectorUrls[0], "http://127.0.0.1:3102/collect");
+    assert.equal(result.imported, 2);
+
+    const uiUrls: string[] = [];
+    const board = await refetchHomebaseAssignments<{ board: { operationalDate: string } }>("2026-08-29", async <TResponse>(url: string) => {
+      uiUrls.push(url);
+      return { board: { operationalDate: "2026-08-29" } } as TResponse;
+    }, async (input, init) => {
+      uiUrls.push(`${String(input)}:${init?.method}`);
+      return Response.json({ ok: true });
+    });
+    assert.deepEqual(board, { board: { operationalDate: "2026-08-29" } });
+    assert.deepEqual(uiUrls, ["/api/homebase/refresh:POST", "/api/dro/assignments?date=2026-08-29"]);
+    assert.equal(uiUrls.some(url => url.includes("/api/dro/refresh")), false, "Refetching assignments never triggers DRO collection");
+
+    let releaseCollection = () => {};
+    const inFlight = requestHomebaseCollection({ fetchImplementation: async () => new Promise<Response>(resolve => { releaseCollection = () => resolve(Response.json({ ok: true, rangeStart: "2026-08-24", rangeEnd: "2026-08-30", collectedAt: "2026-08-29T01:00:00.000Z", imported: 0, updated: 0, unchanged: 0, removed: 0, dates: [], routeAssignments: 0, specialAssignments: 0 })); }) });
+    await Promise.resolve();
+    await assert.rejects(requestHomebaseCollection(), (error: unknown) => error instanceof HomebaseCollectorError && error.code === "HOMEBASE_COLLECTION_IN_PROGRESS" && error.status === 409);
+    releaseCollection();
+    await inFlight;
+
+    await assert.rejects(requestHomebaseCollection({ fetchImplementation: async () => { throw new TypeError("connection refused"); } }), (error: unknown) => error instanceof HomebaseCollectorError && error.code === "HOMEBASE_COLLECTOR_UNAVAILABLE" && !error.message.includes("refused"));
+    await assert.rejects(requestHomebaseCollection({ fetchImplementation: async () => Response.json({ ok: false, error: "auth_failed" }, { status: 401 }) }), (error: unknown) => error instanceof HomebaseCollectorError && error.code === "HOMEBASE_COLLECTOR_AUTH_FAILED");
+  } finally {
+    if (previousToken === undefined) delete process.env.HOMEBASE_COLLECTOR_TOKEN;
+    else process.env.HOMEBASE_COLLECTOR_TOKEN = previousToken;
   }
 });
 

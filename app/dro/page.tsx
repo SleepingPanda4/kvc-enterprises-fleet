@@ -7,6 +7,7 @@ import { AppShell } from "../components/AppShell";
 import { routeTextColor } from "../routes/config";
 import { useRouteColors } from "../routes/useRouteColors";
 import { DroCalendarPicker } from "./DroCalendarPicker";
+import { refetchHomebaseAssignments } from "./homebase-refresh";
 import { LiveDroRefreshGuard, loadCollectedDroView, requestLiveDroRefresh } from "./live-refresh";
 import { selectedDroSnapshot, selectedSnapshotTimestamp } from "./selected-snapshot";
 import { compareDroRouteNumbers, getNextDroSort, parseDroSortParams, type DroSortConfig, type DroSortKey } from "./sorting";
@@ -95,6 +96,10 @@ async function requestDateBundle(operationalDate: string, preferredSnapshotId: n
   return { dateInfo, data, snapshotId };
 }
 
+async function requestAssignmentBoard(operationalDate: string) {
+  return requestJson<{ board: AssignmentBoard }>(`/api/dro/assignments?date=${encodeURIComponent(operationalDate)}`);
+}
+
 function formatTimestamp(value: string | null) {
   if (!value) return "Not provided";
   const date = new Date(value);
@@ -134,6 +139,7 @@ export default function DroPage() {
   const [manualSort, setManualSort] = useState<DroSortConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [collecting, setCollecting] = useState(false);
+  const [refetchingAssignments, setRefetchingAssignments] = useState(false);
   const [assignmentBoard, setAssignmentBoard] = useState<AssignmentBoard | null>(null);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [savingAssignment, setSavingAssignment] = useState("");
@@ -141,7 +147,9 @@ export default function DroPage() {
   const [error, setError] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const collectionGuard = useRef(new LiveDroRefreshGuard());
+  const assignmentCollectionGuard = useRef(new LiveDroRefreshGuard());
   const snapshotRequest = useRef(0);
+  const selectedDateRef = useRef(selectedDate);
   const { key: sortKey, direction: sortDirection } = manualSort || requestedSort;
   const canManage = user?.role === "Fleet Manager";
 
@@ -166,6 +174,10 @@ export default function DroPage() {
     void initialize();
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    selectedDateRef.current = selectedDate;
+  }, [selectedDate]);
 
   useEffect(() => {
     if (!selectedDate || selectedDate !== dateIndex.latestDate) return;
@@ -197,7 +209,7 @@ export default function DroPage() {
       setAssignmentsLoading(true);
       setAssignmentError("");
       try {
-        const result = await requestJson<{ board: AssignmentBoard }>(`/api/dro/assignments?date=${encodeURIComponent(selectedDate)}`);
+        const result = await requestAssignmentBoard(selectedDate);
         if (!cancelled) setAssignmentBoard(result.board);
       } catch (loadError) {
         if (!cancelled) {
@@ -296,8 +308,27 @@ export default function DroPage() {
     });
   }
 
+  async function refetchAssignments() {
+    if (!canManage || !selectedDate || savingAssignment || refetchingAssignments) return;
+    const operationalDate = selectedDate;
+    await assignmentCollectionGuard.current.run(async () => {
+      setRefetchingAssignments(true);
+      setAssignmentError("");
+      setStatusMessage("");
+      try {
+        const result = await refetchHomebaseAssignments<{ board: AssignmentBoard }>(operationalDate, requestJson);
+        if (selectedDateRef.current === operationalDate) setAssignmentBoard(result.board);
+        setStatusMessage("Assignments were refreshed from Homebase.");
+      } catch (collectionError) {
+        setAssignmentError(collectionError instanceof Error ? collectionError.message : "Homebase assignments could not be refreshed.");
+      } finally {
+        setRefetchingAssignments(false);
+      }
+    });
+  }
+
   async function swapAssignment(destination: AssignmentDestination, replacementTeamMemberId: number, replacedTeamMemberId?: number) {
-    if (!canManage || !selectedDate || savingAssignment) return;
+    if (!canManage || !selectedDate || savingAssignment || refetchingAssignments) return;
     const saveKey = destination.type === "route" ? `route:${destination.routeNumber}` : `member:${replacedTeamMemberId || replacementTeamMemberId}`;
     setSavingAssignment(saveKey);
     setAssignmentError("");
@@ -318,7 +349,7 @@ export default function DroPage() {
   }
 
   async function resetAssignments() {
-    if (!canManage || !selectedDate || savingAssignment) return;
+    if (!canManage || !selectedDate || savingAssignment || refetchingAssignments) return;
     if (assignmentBoard?.hasManualChanges && !window.confirm("Reset all assignments for this date to the current Homebase schedule? Manual changes will be discarded.")) return;
     setSavingAssignment("reset");
     setAssignmentError("");
@@ -337,7 +368,7 @@ export default function DroPage() {
   }
 
   async function restoreHomebase(teamMemberId: number) {
-    if (!canManage || !selectedDate || savingAssignment) return;
+    if (!canManage || !selectedDate || savingAssignment || refetchingAssignments) return;
     setSavingAssignment(`restore:${teamMemberId}`);
     setAssignmentError("");
     try {
@@ -458,8 +489,8 @@ export default function DroPage() {
                 const color = colorFor(routeNumber);
                 const capacityPercent = row.vehicleCapacity > 0 ? Math.round((row.usedCapacity / row.vehicleCapacity) * 100) : 0;
                 return <tr key={row.id} className={row.warning ? "dro-warning-row" : ""}>
-                  <td>{canManage && routeNumber ? <select className="dro-driver-select" aria-label={`Driver for route ${routeNumber}`} value={driver?.teamMemberId || ""} disabled={Boolean(savingAssignment) || assignmentsLoading} title={driver?.homebase ? `Homebase: ${driver.homebase.rawAssignment}` : "No Homebase assignment"} onChange={event => void swapAssignment({ type: "route", routeNumber }, Number(event.target.value), driver?.teamMemberId)}><option value="" disabled>{assignmentsLoading ? "Loading assignments…" : "Unassigned"}</option>{assignmentBoard?.members.map(member => <option key={member.teamMemberId} value={member.teamMemberId}>{member.teamMemberId === driver?.teamMemberId ? member.name : `${member.name} — ${member.assignmentLabel}`}</option>)}</select> : <strong className="dro-driver-name" title={driver?.homebase ? `Homebase: ${driver.homebase.rawAssignment}` : undefined}>{assignmentsLoading ? "Loading assignments…" : driver?.name || "Unassigned"}</strong>}</td>
-                  <td><span className="dro-driver-route-meta">{routeNumber ? <strong className="route-number-badge" style={{ backgroundColor: color, color: routeTextColor(color) }}>{routeNumber}</strong> : <span className="route-unassigned">Unmapped</span>}{driver?.source === "manual" && <span className="assignment-source" title={`Homebase: ${driver.homebase?.rawAssignment || "not assigned"}`}>Manual</span>}{canManage && driver?.source === "manual" && driver.homebase && <button type="button" className="restore-homebase" disabled={Boolean(savingAssignment)} title={`Use Homebase assignment: ${driver.homebase.rawAssignment}`} onClick={() => void restoreHomebase(driver.teamMemberId)}>↺</button>}</span></td>
+                  <td>{canManage && routeNumber ? <select className="dro-driver-select" aria-label={`Driver for route ${routeNumber}`} value={driver?.teamMemberId || ""} disabled={Boolean(savingAssignment) || assignmentsLoading || refetchingAssignments} title={driver?.homebase ? `Homebase: ${driver.homebase.rawAssignment}` : "No Homebase assignment"} onChange={event => void swapAssignment({ type: "route", routeNumber }, Number(event.target.value), driver?.teamMemberId)}><option value="" disabled>{assignmentsLoading ? "Loading assignments…" : "Unassigned"}</option>{assignmentBoard?.members.map(member => <option key={member.teamMemberId} value={member.teamMemberId}>{member.teamMemberId === driver?.teamMemberId ? member.name : `${member.name} — ${member.assignmentLabel}`}</option>)}</select> : <strong className="dro-driver-name" title={driver?.homebase ? `Homebase: ${driver.homebase.rawAssignment}` : undefined}>{assignmentsLoading ? "Loading assignments…" : driver?.name || "Unassigned"}</strong>}</td>
+                  <td><span className="dro-driver-route-meta">{routeNumber ? <strong className="route-number-badge" style={{ backgroundColor: color, color: routeTextColor(color) }}>{routeNumber}</strong> : <span className="route-unassigned">Unmapped</span>}{driver?.source === "manual" && <span className="assignment-source" title={`Homebase: ${driver.homebase?.rawAssignment || "not assigned"}`}>Manual</span>}{canManage && driver?.source === "manual" && driver.homebase && <button type="button" className="restore-homebase" disabled={Boolean(savingAssignment) || refetchingAssignments} title={`Use Homebase assignment: ${driver.homebase.rawAssignment}`} onClick={() => void restoreHomebase(driver.teamMemberId)}>↺</button>}</span></td>
                   <td><div className="dro-capacity"><strong>{formatNumber(row.usedCapacity)} / {formatNumber(row.vehicleCapacity)}</strong><span aria-hidden="true"><i style={{ width: `${Math.min(capacityPercent, 100)}%` }} /></span>{row.warning && <span className="sr-only">Capacity warning</span>}</div></td>
                   <td><strong className="dro-primary-value">{formatNumber(row.totalPackages)}</strong></td>
                   <td><div className="dro-stop-values" aria-label={`${row.totalStops} total stops, ${row.pickupStops} pickup stops, ${row.combinationStops} combination stops`}><strong>{row.totalStops}</strong><span>|</span><strong>{row.pickupStops}</strong><span>|</span><strong>{row.combinationStops}</strong></div></td>
@@ -472,10 +503,10 @@ export default function DroPage() {
         <footer className="table-foot"><span>{visibleRows.length} of {selectedRows.length} route{selectedRows.length === 1 ? "" : "s"}</span><span>{isLatestDate ? "Refreshes every minute" : "Historical snapshot"}</span></footer>
       </section>
       <aside className="fleet-card other-assignments-card" aria-label="Other assignments">
-        <div className="other-assignments-head"><div><h2>Other assignments</h2><p>{selectedDate ? formatOperationalDate(selectedDate) : "Selected operational date"}</p></div>{canManage && <button type="button" className="secondary" disabled={Boolean(savingAssignment) || assignmentsLoading || !assignmentBoard?.hasHomebaseData} onClick={() => void resetAssignments()}>{savingAssignment === "reset" ? "Resetting…" : "Reset to Homebase"}</button>}</div>
+        <div className="other-assignments-head"><div><h2>Other assignments</h2><p>{selectedDate ? formatOperationalDate(selectedDate) : "Selected operational date"}</p></div>{canManage && <div className="other-assignment-actions"><button type="button" className="secondary" disabled={Boolean(savingAssignment) || assignmentsLoading || refetchingAssignments} onClick={() => void refetchAssignments()}>{refetchingAssignments ? "Refetching…" : "Refetch Assignments"}</button><button type="button" className="secondary" disabled={Boolean(savingAssignment) || assignmentsLoading || refetchingAssignments || !assignmentBoard?.hasHomebaseData} onClick={() => void resetAssignments()}>{savingAssignment === "reset" ? "Resetting…" : "Reset to Homebase"}</button></div>}</div>
         <div className="other-assignments-body">{assignmentsLoading ? <p className="assignment-panel-state">Loading assignments…</p> : !assignmentBoard ? <p className="assignment-panel-state">Assignments are unavailable.</p> : <>
           {!assignmentBoard.hasHomebaseData && <p className="assignment-panel-note">No Homebase schedule for this date. Team members remain available for manual assignment.</p>}
-          <div className="assignment-buckets">{assignmentBuckets.map(bucket => <section className="assignment-bucket" key={bucket.name}><header><strong>{bucket.name}</strong><span>{bucket.members.length}</span></header>{bucket.members.length ? <div className="assignment-people">{bucket.members.map(member => <div className="assignment-person" key={member.teamMemberId}>{canManage ? <select aria-label={`Reassign ${member.name} from ${bucket.name}`} value={member.teamMemberId} disabled={Boolean(savingAssignment)} title={member.homebase ? `Homebase: ${member.homebase.rawAssignment}` : "No Homebase assignment"} onChange={event => void swapAssignment(member.destination, Number(event.target.value), member.teamMemberId)}>{assignmentBoard.members.map(option => <option key={option.teamMemberId} value={option.teamMemberId}>{option.name} — {option.assignmentLabel}</option>)}</select> : <strong title={member.homebase ? `Homebase: ${member.homebase.rawAssignment}` : undefined}>{member.name}</strong>}{member.source === "manual" && <span className="assignment-source">Manual</span>}{canManage && member.source === "manual" && member.homebase && <button type="button" className="restore-homebase" disabled={Boolean(savingAssignment)} title={`Use Homebase assignment: ${member.homebase.rawAssignment}`} onClick={() => void restoreHomebase(member.teamMemberId)}>↺</button>}</div>)}</div> : <p>No team members</p>}</section>)}</div>
+          <div className="assignment-buckets">{assignmentBuckets.map(bucket => <section className="assignment-bucket" key={bucket.name}><header><strong>{bucket.name}</strong><span>{bucket.members.length}</span></header>{bucket.members.length ? <div className="assignment-people">{bucket.members.map(member => <div className="assignment-person" key={member.teamMemberId}>{canManage ? <select aria-label={`Reassign ${member.name} from ${bucket.name}`} value={member.teamMemberId} disabled={Boolean(savingAssignment) || refetchingAssignments} title={member.homebase ? `Homebase: ${member.homebase.rawAssignment}` : "No Homebase assignment"} onChange={event => void swapAssignment(member.destination, Number(event.target.value), member.teamMemberId)}>{assignmentBoard.members.map(option => <option key={option.teamMemberId} value={option.teamMemberId}>{option.name} — {option.assignmentLabel}</option>)}</select> : <strong title={member.homebase ? `Homebase: ${member.homebase.rawAssignment}` : undefined}>{member.name}</strong>}{member.source === "manual" && <span className="assignment-source">Manual</span>}{canManage && member.source === "manual" && member.homebase && <button type="button" className="restore-homebase" disabled={Boolean(savingAssignment) || refetchingAssignments} title={`Use Homebase assignment: ${member.homebase.rawAssignment}`} onClick={() => void restoreHomebase(member.teamMemberId)}>↺</button>}</div>)}</div> : <p>No team members</p>}</section>)}</div>
           {assignmentBoard.unmatchedHomebase.length > 0 && <details className="unmatched-homebase"><summary>Unmatched Homebase employees ({assignmentBoard.unmatchedHomebase.length})</summary><ul>{assignmentBoard.unmatchedHomebase.map(item => <li key={item.shiftId}>{item.employeeDisplayName} — {item.rawAssignment}</li>)}</ul></details>}
         </>}</div>
       </aside>
