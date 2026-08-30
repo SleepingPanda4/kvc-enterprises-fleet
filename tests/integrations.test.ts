@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { createClient } from "@libsql/client";
 import { parseHomebaseAssignment } from "../services/integrations/homebase-assignment";
 import { calculateDroMetrics, capacityUtilization, hasCapacityWarning } from "../services/integrations/dro-calculations";
@@ -351,7 +351,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
       getLatestSuccessfulDroSummary,
       listDroOperationalDates,
     } = await import("../services/integrations/dro");
-    const { createMgbaDswSnapshot, getMgbaDswDateNavigation, getMgbaDswSnapshotById, getMgbaDswSnapshotsForDate, listMgbaDswOperationalDates } = await import("../services/integrations/mgba-dsw");
+    const { chicagoCalendarDate, chicagoHourKey, createMgbaDswSnapshot, getMgbaDswDateNavigation, getMgbaDswSnapshotById, getMgbaDswSnapshotsForDate, listMgbaDswOperationalDates } = await import("../services/integrations/mgba-dsw");
     const { closeDb } = await import("../db/index");
 
     const client = createClient({ url: databaseUrl });
@@ -375,9 +375,17 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     assert.equal(mgbaRows.find(row => row.driverName === "Actual Driver")?.vehicleNumber, "415659 431928");
     assert.equal(mgbaRows.find(row => row.driverName === "Actual Driver")?.puStops, null);
     assert.equal(mgbaRows.find(row => row.driverName === "Actual Driver")?.allStatusCodePkgs, 8);
-    assert.equal((await getMgbaDswSnapshotsForDate("2026-08-29")).length, 2);
+    const chicagoToday = new Date("2026-08-29T18:00:00.000Z");
+    assert.equal(chicagoCalendarDate(chicagoToday), "2026-08-29");
+    assert.deepEqual((await getMgbaDswSnapshotsForDate("2026-08-29", undefined, chicagoToday)).map(snapshot => snapshot.id), [changedMgba.id, firstMgba.id], "Today retains every changed snapshot, newest first");
+    assert.deepEqual((await getMgbaDswSnapshotsForDate("2026-08-29", undefined, new Date("2026-08-30T18:00:00.000Z"))).map(snapshot => snapshot.id), [changedMgba.id], "Historical reads retain only the latest snapshot in each Chicago hour");
     assert.deepEqual(await getMgbaDswDateNavigation("2026-08-29"), { previousDate: null, nextDate: null, latestDate: "2026-08-29" });
     assert.equal((await listMgbaDswOperationalDates())[0]?.snapshotCount, 2);
+    const utcBoundaryFirst = await createMgbaDswSnapshot({ ...mgbaPayload, operationalDate: "2026-08-28", dswDate: "08/28/2026", capturedAt: "2026-08-29T03:50:00.000Z" });
+    const utcBoundaryLatest = await createMgbaDswSnapshot({ ...mgbaPayload, operationalDate: "2026-08-28", dswDate: "08/28/2026", capturedAt: "2026-08-29T04:30:00.000Z", routes: mgbaPayload.routes.map((row, index) => index === 0 ? { ...row, allStatusCodePkgs: 10 } : row) });
+    assert.equal(chicagoHourKey("2026-08-29T03:50:00.000Z"), "2026-08-28T22", "UTC day boundaries are converted to Chicago before bucketing");
+    assert.equal(chicagoHourKey("2026-08-29T04:30:00.000Z"), "2026-08-28T23");
+    assert.deepEqual((await getMgbaDswSnapshotsForDate("2026-08-28", undefined, new Date("2026-08-30T18:00:00.000Z"))).map(snapshot => snapshot.id), [utcBoundaryLatest.id, utcBoundaryFirst.id], "Historical hour buckets preserve newest-to-oldest order");
     process.env.MGBA_INGEST_TOKEN = "mgba-ingest-test-token";
     const { POST: ingestMgba } = await import("../app/api/internal/mgba/snapshot/route");
     const mgbaRequest = (body: unknown, token?: string) => new Request("http://localhost/api/internal/mgba/snapshot", { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
@@ -609,6 +617,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     });
     const originalFetch = globalThis.fetch;
     try {
+      mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-04T01:30:00.000Z") });
       globalThis.fetch = async (input, init) => {
         assert.equal(String(input), "http://127.0.0.1:3101/collect");
         assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test-ingest-token");
@@ -627,6 +636,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
       assert.equal(refreshBody.deduplicated, true);
       assert.equal(JSON.stringify(refreshBody).includes("test-ingest-token"), false, "The browser response never contains the bearer token");
     } finally {
+      mock.timers.reset();
       globalThis.fetch = originalFetch;
     }
 

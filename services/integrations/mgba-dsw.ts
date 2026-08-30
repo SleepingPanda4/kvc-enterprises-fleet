@@ -11,6 +11,28 @@ let mgbaSnapshotQueue: Promise<void> = Promise.resolve();
 
 export { normalizeMgbaDswRoute, normalizeMgbaRouteNumber } from "./mgba-dsw-normalization";
 
+const CHICAGO_TIME_ZONE = "America/Chicago";
+
+function chicagoParts(value: Date | string) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: CHICAGO_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23",
+  }).formatToParts(date);
+  const part = (type: string) => parts.find(item => item.type === type)?.value || "";
+  return { year: part("year"), month: part("month"), day: part("day"), hour: part("hour") };
+}
+
+export function chicagoCalendarDate(value: Date = new Date()) {
+  const parts = chicagoParts(value);
+  return parts ? `${parts.year}-${parts.month}-${parts.day}` : "";
+}
+
+export function chicagoHourKey(capturedAt: string) {
+  const parts = chicagoParts(capturedAt);
+  return parts ? `${parts.year}-${parts.month}-${parts.day}T${parts.hour}` : "";
+}
+
 async function withMgbaSnapshotLock<T>(work: () => Promise<T>) {
   const previous = mgbaSnapshotQueue;
   let release: () => void = () => {};
@@ -43,8 +65,17 @@ export async function listMgbaDswOperationalDates(database: Database = getDb()) 
   return database.select({ operationalDate: mgbaDswSnapshots.operationalDate, snapshotCount: sql<number>`COUNT(*)`, latestCapturedAt: sql<string>`MAX(${mgbaDswSnapshots.capturedAt})` })
     .from(mgbaDswSnapshots).groupBy(mgbaDswSnapshots.operationalDate).orderBy(desc(mgbaDswSnapshots.operationalDate));
 }
-export async function getMgbaDswSnapshotsForDate(operationalDate: string, database: Database = getDb()) {
-  return database.select().from(mgbaDswSnapshots).where(eq(mgbaDswSnapshots.operationalDate, operationalDate)).orderBy(desc(mgbaDswSnapshots.capturedAt), desc(mgbaDswSnapshots.id));
+export async function getMgbaDswSnapshotsForDate(operationalDate: string, database: Database = getDb(), now: Date = new Date()) {
+  const snapshots = await database.select().from(mgbaDswSnapshots).where(eq(mgbaDswSnapshots.operationalDate, operationalDate)).orderBy(desc(mgbaDswSnapshots.capturedAt), desc(mgbaDswSnapshots.id));
+  if (operationalDate === chicagoCalendarDate(now)) return snapshots;
+
+  const seenHours = new Set<string>();
+  return snapshots.filter(snapshot => {
+    const hour = chicagoHourKey(snapshot.capturedAt);
+    if (!hour || seenHours.has(hour)) return false;
+    seenHours.add(hour);
+    return true;
+  });
 }
 export async function getMgbaDswDateNavigation(operationalDate: string, database: Database = getDb()) {
   const dates = (await listMgbaDswOperationalDates(database)).map(item => item.operationalDate).sort();
