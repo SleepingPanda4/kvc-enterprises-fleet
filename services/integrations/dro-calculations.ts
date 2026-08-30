@@ -15,6 +15,17 @@ function number(value: number | null | undefined) {
   return Number.isFinite(value) ? Number(value) : 0;
 }
 
+export function capacityUtilization(usedCapacity: number | null | undefined, vehicleCapacity: number | null | undefined) {
+  const used = number(usedCapacity);
+  const capacity = number(vehicleCapacity);
+  return capacity > 0 ? used / capacity : null;
+}
+
+export function hasCapacityWarning(usedCapacity: number | null | undefined, vehicleCapacity: number | null | undefined) {
+  const utilization = capacityUtilization(usedCapacity, vehicleCapacity);
+  return utilization !== null && utilization >= 0.5;
+}
+
 export function calculateDroMetrics(input: DroComponents) {
   const deliveryCube = number(input.deliveryCube);
   const pickupCube = number(input.pickupCube);
@@ -42,6 +53,6 @@ export function calculateDroMetrics(input: DroComponents) {
     pickupStops,
     combinationStops,
     totalStops: deliveryStops + pickupStops + combinationStops,
-    warning: vehicleCapacity === 600 && usedCapacity > 300,
+    warning: hasCapacityWarning(usedCapacity, vehicleCapacity),
   };
 }

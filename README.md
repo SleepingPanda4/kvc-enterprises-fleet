@@ -150,8 +150,10 @@ systemctl restart kvc-fleet
 Fleet Managers can use **Refetch Assignments** from the DRO page. This asks a
 separate localhost-only Homebase collector control service to collect a fresh
 schedule using its already-running authenticated Chrome/CDP session; Fleet
-Manager never starts or restarts Chrome itself. Configure the matching control
-token in the protected same file:
+Manager never starts or restarts Chrome itself. The request includes the selected
+operational date; the collector must return a range containing that day (normally
+the current and next week). Configure the matching control token in the protected
+same file:
 
 ```text
 HOMEBASE_COLLECTOR_URL=http://127.0.0.1:3102/collect
@@ -184,6 +186,10 @@ Fleet Manager exposes `POST /api/homebase/refresh` to Fleet Managers only. It
 is a server-side proxy to that local control service and never sends tokens to
 the browser. This operation refreshes Homebase staffing only; it never creates
 or refreshes a DRO snapshot.
+
+Manual **Refresh DRO** is available only from 8:00 PM through 11:59 PM Central
+Time. The button and server endpoint both enforce this window; outside it the
+endpoint returns `403` and does not call the collector.
 
 Safe example request body:
 
@@ -220,9 +226,17 @@ timestamps, and raw assignment are required. A successful response reports
 `imported`, `updated`, `unchanged`, `removed`, `dates`, `routeAssignments`, and
 `specialAssignments`.
 
-DRO collectors use the existing authenticated snapshot endpoint. Snapshots stay
-immutable; the existing after-11-PM deduplication may reuse the newest identical
-snapshot rather than creating duplicate database rows. Collector/browser
+DRO operational dates are based on the capture time in `America/Chicago`.
+Captures from 8:00 PM through 11:59:59 PM are assigned to the following calendar
+day, so Saturday-evening preparation belongs to Sunday staffing. The capture
+timestamp remains unchanged. The migration corrects existing snapshot date
+indexes from their stored capture timestamps without changing snapshot IDs or
+route-row history.
+
+Snapshots stay immutable; the existing after-11-PM (through 11:59:59 PM)
+deduplication may reuse the newest identical snapshot rather than creating
+duplicate database rows. Capacity warnings are calculated from each route's
+actual vehicle capacity and appear at 50% utilization or higher. Collector/browser
 automation and credentials intentionally remain outside this application layer.
 
 The external Playwright/PurpleID collector is not stored in this repository.

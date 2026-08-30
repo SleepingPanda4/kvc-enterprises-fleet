@@ -32,8 +32,8 @@ export async function requestLiveDroRefresh(fetchImplementation: typeof fetch = 
   } catch {
     throw new Error("Could not connect to the DRO collection service.");
   }
-  const body = await response.json().catch(() => ({ error: "DRO collection could not be completed." })) as Partial<LiveDroRefreshResult> & { error?: string };
-  if (!response.ok) throw new Error(body.error || "DRO collection could not be completed.");
+  const body = await response.json().catch(() => ({ error: "DRO collection could not be completed." })) as Partial<LiveDroRefreshResult> & { error?: string; message?: string };
+  if (!response.ok) throw new Error(body.message || body.error || "DRO collection could not be completed.");
   if (body.ok !== true || !Number.isSafeInteger(body.snapshotId) || !body.operationalDate) {
     throw new Error("DRO collection returned an invalid result.");
   }

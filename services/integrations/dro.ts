@@ -1,8 +1,9 @@
 import { desc, eq, sql } from "drizzle-orm";
 import { getDb, type Database } from "../../db";
 import { droRouteRows, droSnapshots, routes } from "../../db/schema";
-import { calculateDroMetrics, type DroComponents } from "./dro-calculations";
+import { calculateDroMetrics, hasCapacityWarning, type DroComponents } from "./dro-calculations";
 import { droRoutesAreIdentical, shouldDeduplicateDroSnapshot, type ComparableDroRoute } from "./dro-deduplication";
+import { operationalDateForDroCapture } from "./dro-operational-date";
 import { ensureRoute } from "./routes";
 
 export type DroRouteInput = DroComponents & {
@@ -41,6 +42,8 @@ async function withDroSnapshotLock<T>(work: () => Promise<T>) {
 
 export async function createDroSnapshot(input: DroSnapshotInput, database: Database = getDb()) {
   return withDroSnapshotLock(async () => {
+    const operationalDate = operationalDateForDroCapture(input.capturedAt.trim());
+    if (!operationalDate) throw new Error("DRO capturedAt must be a valid timestamp.");
     const preparedRows: Array<{
       row: DroRouteInput;
       routeNumber: string | null;
@@ -53,7 +56,7 @@ export async function createDroSnapshot(input: DroSnapshotInput, database: Datab
       preparedRows.push({ row, routeNumber, routeId: route?.id || null, metrics: calculateDroMetrics(row) });
     }
 
-    if (shouldDeduplicateDroSnapshot(input.capturedAt.trim(), input.operationalDate.trim())) {
+    if (shouldDeduplicateDroSnapshot(input.capturedAt.trim(), operationalDate)) {
       const [newestSnapshot] = await database.select().from(droSnapshots).orderBy(desc(droSnapshots.id)).limit(1);
       if (newestSnapshot) {
         const existingRows = await getDroRouteRows(newestSnapshot.id, database);
@@ -74,7 +77,7 @@ export async function createDroSnapshot(input: DroSnapshotInput, database: Datab
 
     return database.transaction(async transaction => {
       const [snapshot] = await transaction.insert(droSnapshots).values({
-        operationalDate: input.operationalDate.trim(),
+        operationalDate,
         capturedAt: input.capturedAt.trim(),
         sourceTimestamp: input.sourceTimestamp?.trim() || null,
         stationId: input.stationId.trim(),
@@ -156,7 +159,7 @@ async function getDroRouteRows(snapshotId: number, database: Database) {
   }).from(droRouteRows)
     .leftJoin(routes, eq(droRouteRows.routeId, routes.id))
     .where(eq(droRouteRows.snapshotId, snapshotId));
-  return rows;
+  return rows.map(row => ({ ...row, warning: hasCapacityWarning(row.usedCapacity, row.vehicleCapacity) }));
 }
 
 export async function getDroSnapshotById(snapshotId: number, database: Database = getDb()) {

@@ -28,6 +28,7 @@ export class HomebaseCollectorError extends Error {
 type CollectorOptions = {
   fetchImplementation?: typeof fetch;
   timeoutMs?: number;
+  requiredOperationalDate?: string;
 };
 
 let collectionInProgress = false;
@@ -72,7 +73,8 @@ export async function requestHomebaseCollection(options: CollectorOptions = {}):
     try {
       response = await (options.fetchImplementation || fetch)(process.env.HOMEBASE_COLLECTOR_URL || DEFAULT_COLLECTOR_URL, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ requiredOperationalDate: options.requiredOperationalDate || null }),
         signal: controller.signal,
       });
     } catch (error) {
@@ -96,6 +98,9 @@ export async function requestHomebaseCollection(options: CollectorOptions = {}):
       || imported === null || updated === null || unchanged === null || removed === null
       || routeAssignments === null || specialAssignments === null) {
       throw new HomebaseCollectorError("Homebase collector returned an invalid result.", "HOMEBASE_COLLECTOR_INVALID_RESPONSE", 502);
+    }
+    if (options.requiredOperationalDate && (body.rangeStart > options.requiredOperationalDate || body.rangeEnd < options.requiredOperationalDate)) {
+      throw new HomebaseCollectorError("Homebase collector did not return a range covering the selected operational date.", "HOMEBASE_COLLECTOR_RANGE_INVALID", 502);
     }
     return { ok: true, rangeStart: body.rangeStart, rangeEnd: body.rangeEnd, collectedAt: body.collectedAt, imported, updated, unchanged, removed, dates: body.dates, routeAssignments, specialAssignments };
   } finally {

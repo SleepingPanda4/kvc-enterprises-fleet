@@ -6,9 +6,11 @@ import path from "node:path";
 import test from "node:test";
 import { createClient } from "@libsql/client";
 import { parseHomebaseAssignment } from "../services/integrations/homebase-assignment";
-import { calculateDroMetrics } from "../services/integrations/dro-calculations";
+import { calculateDroMetrics, capacityUtilization, hasCapacityWarning } from "../services/integrations/dro-calculations";
 import { droRoutesAreIdentical, shouldDeduplicateDroSnapshot, type ComparableDroRoute } from "../services/integrations/dro-deduplication";
 import { DroCollectorError, requestDroCollection } from "../services/integrations/dro-collector";
+import { DRO_REFRESH_WINDOW_MESSAGE, isDroManualRefreshAllowed, operationalDateForDroCapture } from "../services/integrations/dro-operational-date";
+import { DroRefreshWindowError, requestManualDroCollection } from "../services/integrations/dro-refresh-window";
 import { HomebaseCollectorError, requestHomebaseCollection } from "../services/integrations/homebase-collector";
 import { compareDroRouteNumbers, getNextDroSort, parseDroSortParams } from "../app/dro/sorting";
 import { buildDroCalendarMonth, isDroDateAvailable, shiftDroCalendarMonth } from "../app/dro/calendar";
@@ -43,7 +45,7 @@ test("Homebase assignment parser identifies routes and special work", () => {
   assert.deepEqual(parseHomebaseAssignment("JUMPER"), { routeNumber: null, assignmentType: "other", specialType: null });
 });
 
-test("DRO totals and the exact 600-capacity warning rule are deterministic", () => {
+test("DRO totals and capacity warnings use the actual vehicle capacity", () => {
   const atThreshold = calculateDroMetrics({
     deliveryCube: 200, pickupCube: 75, combinationCube: 25, vehicleCapacity: 600,
     deliveryPackages: 10, pickupPackages: 2, combinationPackages: 3,
@@ -52,10 +54,15 @@ test("DRO totals and the exact 600-capacity warning rule are deterministic", () 
   assert.equal(atThreshold.usedCapacity, 300);
   assert.equal(atThreshold.totalPackages, 15);
   assert.equal(atThreshold.totalStops, 11);
-  assert.equal(atThreshold.warning, false);
-  assert.equal(calculateDroMetrics({ deliveryCube: 301, vehicleCapacity: 600 }).warning, true);
-  assert.equal(calculateDroMetrics({ deliveryCube: 419, vehicleCapacity: 420 }).warning, false);
-  assert.equal(calculateDroMetrics({ deliveryCube: 700, vehicleCapacity: 998 }).warning, false);
+  assert.equal(atThreshold.warning, true, "50% is a warning");
+  assert.equal(calculateDroMetrics({ deliveryCube: 299, vehicleCapacity: 600 }).warning, false);
+  assert.equal(calculateDroMetrics({ deliveryCube: 210, vehicleCapacity: 420 }).warning, true);
+  assert.equal(calculateDroMetrics({ deliveryCube: 419, vehicleCapacity: 420 }).warning, true);
+  assert.equal(calculateDroMetrics({ deliveryCube: 499, vehicleCapacity: 998 }).warning, true);
+  assert.equal(calculateDroMetrics({ deliveryCube: 498, vehicleCapacity: 998 }).warning, false);
+  assert.equal(capacityUtilization(420, 420), 1);
+  assert.equal(capacityUtilization(1, 0), null);
+  assert.equal(hasCapacityWarning(0, 0), false);
 });
 
 test("DRO overview links and URL sorting preserve the requested ordering", () => {
@@ -96,12 +103,38 @@ test("DRO calendar enables only available dates and navigates months safely", ()
   assert.equal(emptyMonth.days.filter(Boolean).every(day => day?.available === false), true);
 });
 
-test("DRO deduplication cutoff and route comparison use Chicago time and meaningful fields", () => {
-  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T03:30:00.000Z", "2026-08-29"), false, "10:30 PM remains a normal snapshot");
-  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T04:00:00.000Z", "2026-08-29"), false, "Exactly 11 PM remains a normal snapshot");
-  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T04:00:00.001Z", "2026-08-29"), true, "The cutoff begins immediately after 11 PM");
-  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T04:20:00.000Z", "2026-08-29"), true);
-  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T05:10:00.000Z", "2026-08-29"), true, "The prior operational day continues across midnight");
+test("DRO operational dates, refresh window, and deduplication use Chicago time", async () => {
+  assert.equal(operationalDateForDroCapture("2026-08-30T00:59:59.000Z"), "2026-08-29", "7:59:59 PM remains the same operational date");
+  for (const capturedAt of ["2026-08-30T01:00:00.000Z", "2026-08-30T01:30:00.000Z", "2026-08-30T04:00:00.000Z", "2026-08-30T04:59:59.000Z"]) {
+    assert.equal(operationalDateForDroCapture(capturedAt), "2026-08-30", `${capturedAt} rolls to the next operational date`);
+  }
+  assert.equal(operationalDateForDroCapture("2026-08-30T17:00:00.000Z"), "2026-08-30", "Noon remains its local calendar date");
+  assert.equal(isDroManualRefreshAllowed(new Date("2026-08-30T00:59:59.000Z")), false);
+  assert.equal(isDroManualRefreshAllowed(new Date("2026-08-30T01:00:00.000Z")), true);
+  assert.equal(isDroManualRefreshAllowed(new Date("2026-08-30T04:59:59.000Z")), true);
+  assert.equal(isDroManualRefreshAllowed(new Date("2026-08-30T05:00:00.000Z")), false, "Midnight is outside the preparation window");
+  assert.equal(isDroManualRefreshAllowed(new Date("2026-08-30T17:00:00.000Z")), false);
+  let collectorCalls = 0;
+  await assert.rejects(
+    requestManualDroCollection(new Date("2026-08-30T00:59:59.000Z"), async () => {
+      collectorCalls += 1;
+      throw new Error("This must not run");
+    }),
+    error => error instanceof DroRefreshWindowError && error.message === DRO_REFRESH_WINDOW_MESSAGE,
+  );
+  assert.equal(collectorCalls, 0, "The collector is never called outside the window");
+  const collected = await requestManualDroCollection(new Date("2026-08-30T01:00:00.000Z"), async () => {
+    collectorCalls += 1;
+    return { ok: true, snapshotId: 1, operationalDate: "2026-08-30", capturedAt: "2026-08-30T01:00:00.000Z", created: true, deduplicated: false };
+  });
+  assert.equal(collected.snapshotId, 1);
+  assert.equal(collectorCalls, 1);
+
+  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T03:30:00.000Z", "2026-08-30"), false, "10:30 PM remains a normal snapshot");
+  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T04:00:00.000Z", "2026-08-30"), false, "Exactly 11 PM remains a normal snapshot");
+  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T04:00:00.001Z", "2026-08-30"), true, "The cutoff begins immediately after 11 PM");
+  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T04:20:00.000Z", "2026-08-30"), true);
+  assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T05:10:00.000Z", "2026-08-30"), false, "Midnight starts a new calendar operational day");
   assert.equal(shouldDeduplicateDroSnapshot("2026-08-30T14:00:00.000Z", "2026-08-30"), false, "A new operational day uses its normal window");
 
   const base: ComparableDroRoute = {
@@ -313,11 +346,11 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
       rows: [{ routeNumber: "614", rawWaNumber: "WA-PREV", deliveryCube: 250, vehicleCapacity: 600 }],
     });
     const firstSnapshot = await createDroSnapshot({
-      operationalDate: "2026-08-29", capturedAt: "2026-08-28T20:00:00Z", stationId: "KVC", serviceAreaId: "STL", status: "complete",
+      operationalDate: "2026-08-29", capturedAt: "2026-08-29T01:00:00Z", stationId: "KVC", serviceAreaId: "STL", status: "complete",
       rows: [{ routeNumber: "617", rawWaNumber: "WA-1", deliveryCube: 301, vehicleCapacity: 600 }],
     });
     const secondSnapshot = await createDroSnapshot({
-      operationalDate: "2026-08-29", capturedAt: "2026-08-28T21:00:00Z", stationId: "KVC", serviceAreaId: "STL", status: "complete",
+      operationalDate: "2026-08-29", capturedAt: "2026-08-29T01:30:00Z", stationId: "KVC", serviceAreaId: "STL", status: "complete",
       rows: [{ routeNumber: "617", rawWaNumber: "WA-1", deliveryCube: 300, vehicleCapacity: 600 }],
     });
     const newestDaySnapshot = await createDroSnapshot({
@@ -340,6 +373,8 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     assert.equal(selectedSnapshot?.snapshot.id, firstSnapshot.id);
     assert.equal(selectedSnapshot?.rows[0].rawWaNumber, "WA-1");
     assert.equal(selectedSnapshot?.rows[0].warning, true);
+    await client.execute({ sql: "UPDATE dro_route_rows SET warning = 0 WHERE snapshot_id = ?", args: [firstSnapshot.id] });
+    assert.equal((await getDroSnapshotById(firstSnapshot.id))?.rows[0].warning, true, "Historical warning display is recalculated from the stored capacity values");
 
     assert.deepEqual(await getDroDateNavigation("2026-08-29"), {
       previousDate: "2026-08-28", nextDate: "2026-08-31", latestDate: "2026-08-31",
@@ -353,7 +388,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     const latest = await getLatestDroSnapshot();
     assert.equal(latest?.snapshot.id, newestDaySnapshot.id);
     assert.equal(latest?.snapshot.operationalDate, "2026-08-31");
-    assert.equal(latest?.rows[0].warning, false);
+    assert.equal(latest?.rows[0].warning, true);
 
     await createDroSnapshot({
       operationalDate: "2026-09-02", capturedAt: "2026-09-02T02:00:00Z", stationId: "KVC", serviceAreaId: "STL", status: "failed",
@@ -366,7 +401,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
       routeCount: 1,
       totalPackages: 15,
       totalStops: 11,
-      capacityWarnings: 0,
+      capacityWarnings: 1,
     });
 
     const { getOverviewData } = await import("../services/overview");
@@ -422,7 +457,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     const secondIngestionBody = await secondIngestion.json() as { snapshotId: number; created: boolean; deduplicated: boolean };
     assert.notEqual(firstIngestionBody.snapshotId, secondIngestionBody.snapshotId, "Every valid post must create a new snapshot");
 
-    const ingestedSnapshots = await client.execute("SELECT COUNT(*) AS count FROM dro_snapshots WHERE operational_date = '2026-09-01'");
+    const ingestedSnapshots = await client.execute("SELECT COUNT(*) AS count FROM dro_snapshots WHERE operational_date = '2026-09-02' AND station_id = '631'");
     assert.equal(Number(ingestedSnapshots.rows[0].count), 2);
     const calculatedRow = await client.execute({
       sql: "SELECT used_capacity, total_packages, total_stops, warning FROM dro_route_rows WHERE snapshot_id = ?",
@@ -474,7 +509,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     const orderOnlyDuplicate = await createDroSnapshot(lateInput("2026-09-04T04:40:00.000Z", [...capacityChangedRows].reverse(), "DRO report B"));
     assert.equal(orderOnlyDuplicate.id, changedLate.id, "Ordering and snapshot metadata do not create a late duplicate");
     const midnightDuplicate = await createDroSnapshot(lateInput("2026-09-04T05:10:00.000Z", capacityChangedRows, "DRO report after midnight"));
-    assert.equal(midnightDuplicate.id, changedLate.id, "Deduplication continues across midnight for the prior operational date");
+    assert.notEqual(midnightDuplicate.id, changedLate.id, "Midnight begins a new capture window and preserves the snapshot");
 
     const afterMidnightChangedRows = capacityChangedRows.map((row, index) => index === 1 ? { ...row, routeTime: "09:30" } : row);
     const afterMidnightChanged = await createDroSnapshot(lateInput("2026-09-04T05:20:00.000Z", afterMidnightChangedRows));
@@ -485,12 +520,12 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
       createDroSnapshot(lateInput("2026-09-04T05:30:00.000Z", concurrentChangedRows)),
       createDroSnapshot(lateInput("2026-09-04T05:31:00.000Z", [...concurrentChangedRows].reverse())),
     ]);
-    assert.equal(concurrentResults[0].id, concurrentResults[1].id, "Equivalent concurrent late ingestions resolve to one authoritative snapshot");
-    assert.equal(concurrentResults.filter(result => result.created).length, 1);
-    assert.equal(concurrentResults.filter(result => result.deduplicated).length, 1);
+    assert.notEqual(concurrentResults[0].id, concurrentResults[1].id, "Snapshots outside the after-11 PM deduplication window remain historical records");
+    assert.equal(concurrentResults.filter(result => result.created).length, 2);
+    assert.equal(concurrentResults.filter(result => result.deduplicated).length, 0);
 
-    const lateSnapshotCount = await client.execute("SELECT COUNT(*) AS count FROM dro_snapshots WHERE operational_date = '2026-09-03'");
-    assert.equal(Number(lateSnapshotCount.rows[0].count), 6);
+    const lateSnapshotCount = await client.execute("SELECT COUNT(*) AS count FROM dro_snapshots WHERE operational_date = '2026-09-04'");
+    assert.equal(Number(lateSnapshotCount.rows[0].count), 8);
     const immutableCutoff = await client.execute({ sql: "SELECT captured_at FROM dro_snapshots WHERE id = ?", args: [exactlyEleven.id] });
     assert.equal(immutableCutoff.rows[0].captured_at, "2026-09-04T04:00:00.000Z", "Deduplication never rewrites the existing snapshot");
 
@@ -613,6 +648,18 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     const updatedSource = await client.execute("SELECT raw_note FROM homebase_shifts WHERE homebase_shift_id = 'hb-josh-05'");
     assert.equal(updatedSource.rows[0].raw_note, "Updated source note");
 
+    const sundayHomebasePayload = {
+      rangeStart: "2026-10-11",
+      rangeEnd: "2026-10-11",
+      collectedAt: "2026-10-10T23:30:00.000Z",
+      shifts: [{
+        homebaseShiftId: "hb-josh-11", homebaseUserId: "hb-josh", date: "2026-10-11", employee: "JOSHUA GALLAGHER",
+        firstName: "JOSHUA", lastName: "GALLAGHER", startAt: "2026-10-11T13:00:00.000Z", endAt: "2026-10-11T22:00:00.000Z",
+        assignment: "621", route: "621", type: "route", confidence: "high", note: null, publishedStatus: "published",
+      }],
+    };
+    assert.equal((await ingestHomebaseSchedule(homebaseRequest(sundayHomebasePayload, "homebase-server-test-token"))).status, 200);
+
     const {
       getDailyAssignmentBoard,
       resetDailyAssignmentsToHomebase,
@@ -633,7 +680,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     assert.equal(board.unmatchedHomebase.length, 1, "Unmatched Homebase users remain safe source records");
     assert.equal(board.unmatchedHomebase[0].employeeDisplayName, "UNMATCHED PERSON");
 
-    const boardWithoutHomebase = await getDailyAssignmentBoard("2026-10-11");
+    const boardWithoutHomebase = await getDailyAssignmentBoard("2026-10-12");
     assert.equal(boardWithoutHomebase.hasHomebaseData, false);
     assert.ok(boardWithoutHomebase.members.every(member => member.assignmentLabel === "Unassigned"), "DRO staffing remains usable without Homebase data");
     const historicalBoard = await getDailyAssignmentBoard("2026-10-06");
@@ -648,6 +695,12 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
       rows: [{ routeNumber: "621", rawWaNumber: "WA-STAFF-2", deliveryCube: 120, vehicleCapacity: 600 }],
     });
     assert.notEqual(staffingSnapshotOne.id, staffingSnapshotTwo.id);
+    const saturdayEveningSnapshot = await createDroSnapshot({
+      operationalDate: "2026-10-10", capturedAt: "2026-10-11T01:30:00.000Z", stationId: "631", serviceAreaId: "2994532", status: "success",
+      rows: [{ routeNumber: "621", rawWaNumber: "WA-SUNDAY", deliveryCube: 300, vehicleCapacity: 600 }],
+    });
+    assert.equal(saturdayEveningSnapshot.operationalDate, "2026-10-11", "Saturday evening DRO captures select Sunday operational staffing");
+    assert.equal(assignmentFor(await getDailyAssignmentBoard(saturdayEveningSnapshot.operationalDate), "Joshua Gallagher").assignmentLabel, "621");
     assert.equal(assignmentFor(await getDailyAssignmentBoard("2026-10-05"), "Joshua Gallagher").assignmentLabel, "621", "Snapshot changes do not change the date staffing board");
     const immutableDroBefore = await client.execute({ sql: "SELECT captured_at FROM dro_snapshots WHERE id = ?", args: [staffingSnapshotOne.id] });
 

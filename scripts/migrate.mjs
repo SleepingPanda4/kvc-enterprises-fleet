@@ -14,6 +14,26 @@ await mkdir(path.dirname(path.resolve(databasePath)), { recursive: true });
 
 const client = createClient({ url: databaseUrl });
 const routeNumbers = ["613", "614", "617", "618", "621", "622", "625", "626", "629", "630", "633", "634", "637", "638", "641", "642", "645", "1127"];
+
+function nextCalendarDate(dateOnly) {
+  const date = new Date(`${dateOnly}T12:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+// This one-time-compatible migration mirrors the application helper. It is
+// intentionally idempotent: only the operational-date index is corrected;
+// snapshot IDs, source timestamps, and immutable route rows stay unchanged.
+function operationalDateForCapturedAt(capturedAt) {
+  const date = new Date(capturedAt);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23",
+  }).formatToParts(date);
+  const part = type => parts.find(item => item.type === type)?.value || "";
+  const localDate = `${part("year")}-${part("month")}-${part("day")}`;
+  return Number(part("hour")) >= 20 ? nextCalendarDate(localDate) : localDate;
+}
 const statements = [
   "PRAGMA foreign_keys = ON",
   "PRAGMA journal_mode = WAL",
@@ -263,6 +283,16 @@ try {
       await client.execute(`ALTER TABLE homebase_shifts ADD COLUMN ${name} ${definition}`);
     }
   }
+  const existingSnapshots = await client.execute("SELECT id, operational_date, captured_at FROM dro_snapshots");
+  for (const snapshot of existingSnapshots.rows) {
+    const correctedOperationalDate = operationalDateForCapturedAt(String(snapshot.captured_at));
+    if (correctedOperationalDate && correctedOperationalDate !== String(snapshot.operational_date)) {
+      await client.execute({ sql: "UPDATE dro_snapshots SET operational_date = ? WHERE id = ?", args: [correctedOperationalDate, Number(snapshot.id)] });
+    }
+  }
+  await client.execute(`UPDATE dro_route_rows
+    SET warning = CASE WHEN vehicle_capacity > 0 AND used_capacity >= vehicle_capacity * 0.5 THEN 1 ELSE 0 END
+    WHERE warning <> CASE WHEN vehicle_capacity > 0 AND used_capacity >= vehicle_capacity * 0.5 THEN 1 ELSE 0 END`);
   for (const routeNumber of routeNumbers) {
     await client.execute({
       sql: "INSERT INTO route_settings (route_number, color) VALUES (?, ?) ON CONFLICT (route_number) DO NOTHING",

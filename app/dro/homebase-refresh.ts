@@ -5,7 +5,11 @@ export async function refetchHomebaseAssignments<T>(
 ) {
   let response: Response;
   try {
-    response = await fetchImplementation("/api/homebase/refresh", { method: "POST" });
+    response = await fetchImplementation("/api/homebase/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operationalDate }),
+    });
   } catch {
     throw new Error("Could not connect to the Homebase collector.");
   }

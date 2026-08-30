@@ -1,4 +1,4 @@
-const DRO_TIME_ZONE = "America/Chicago";
+import { chicagoDateTime, operationalDateForDroCapture } from "./dro-operational-date";
 
 export type ComparableDroRoute = {
   routeNumber: string | null;
@@ -68,36 +68,10 @@ export function droRoutesAreIdentical(left: readonly ComparableDroRoute[], right
     && normalizedLeft.every((row, index) => row === normalizedRight[index]);
 }
 
-function chicagoDateTime(capturedAt: string) {
-  const capturedDate = new Date(capturedAt);
-  if (Number.isNaN(capturedDate.getTime())) return null;
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: DRO_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(capturedDate);
-  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find(item => item.type === type)?.value || "";
-  return {
-    localDate: `${part("year")}-${part("month")}-${part("day")}`,
-    hour: Number(part("hour")),
-    minute: Number(part("minute")),
-    second: Number(part("second")),
-    millisecond: capturedDate.getUTCMilliseconds(),
-  };
-}
-
 export function shouldDeduplicateDroSnapshot(capturedAt: string, operationalDate: string) {
   const local = chicagoDateTime(capturedAt);
   if (!local) return false;
-
-  // DRO can retain the prior operational date after midnight. That period is
-  // the continuation of the prior evening's late collection window.
-  if (local.localDate > operationalDate) return true;
-  if (local.localDate !== operationalDate || local.hour !== 23) return false;
+  const calculatedOperationalDate = operationalDateForDroCapture(capturedAt);
+  if (calculatedOperationalDate !== operationalDate || local.hour !== 23) return false;
   return local.minute > 0 || local.second > 0 || local.millisecond > 0;
 }

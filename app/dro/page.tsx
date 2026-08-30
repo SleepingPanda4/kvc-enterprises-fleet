@@ -11,6 +11,8 @@ import { refetchHomebaseAssignments } from "./homebase-refresh";
 import { LiveDroRefreshGuard, loadCollectedDroView, requestLiveDroRefresh } from "./live-refresh";
 import { selectedDroSnapshot, selectedSnapshotTimestamp } from "./selected-snapshot";
 import { compareDroRouteNumbers, getNextDroSort, parseDroSortParams, type DroSortConfig, type DroSortKey } from "./sorting";
+import { capacityUtilization, hasCapacityWarning } from "../../services/integrations/dro-calculations";
+import { DRO_REFRESH_WINDOW_MESSAGE, isDroManualRefreshAllowed } from "../../services/integrations/dro-operational-date";
 
 type DroSnapshot = {
   id: number;
@@ -139,6 +141,7 @@ export default function DroPage() {
   const [manualSort, setManualSort] = useState<DroSortConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [collecting, setCollecting] = useState(false);
+  const [refreshClock, setRefreshClock] = useState(() => new Date());
   const [refetchingAssignments, setRefetchingAssignments] = useState(false);
   const [assignmentBoard, setAssignmentBoard] = useState<AssignmentBoard | null>(null);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
@@ -178,6 +181,11 @@ export default function DroPage() {
   useEffect(() => {
     selectedDateRef.current = selectedDate;
   }, [selectedDate]);
+
+  useEffect(() => {
+    const refreshClockTimer = window.setInterval(() => setRefreshClock(new Date()), 1000);
+    return () => window.clearInterval(refreshClockTimer);
+  }, []);
 
   useEffect(() => {
     if (!selectedDate || selectedDate !== dateIndex.latestDate) return;
@@ -285,7 +293,7 @@ export default function DroPage() {
   }
 
   async function collectLiveDro() {
-    if (!canManage) return;
+    if (!canManage || !isDroManualRefreshAllowed(refreshClock)) return;
     await collectionGuard.current.run(async () => {
       setCollecting(true);
       setError("");
@@ -420,7 +428,7 @@ export default function DroPage() {
   const totals = useMemo(() => ({
     packages: selectedRows.reduce((sum, row) => sum + row.totalPackages, 0),
     stops: selectedRows.reduce((sum, row) => sum + row.totalStops, 0),
-    warnings: selectedRows.filter(row => row.warning).length,
+    warnings: selectedRows.filter(row => hasCapacityWarning(row.usedCapacity, row.vehicleCapacity)).length,
   }), [selectedRows]);
   const isLatestDate = Boolean(selectedDate && selectedDate === dateIndex.latestDate);
   const specialNames = ["BC", "TBD ROUTE", "ON CALL AT HOME"];
@@ -434,11 +442,12 @@ export default function DroPage() {
       ? member.destination.type === "unassigned"
       : member.destination.type === "special" && member.destination.specialAssignment === name),
   }));
+  const manualRefreshAllowed = isDroManualRefreshAllowed(refreshClock);
 
   return <AppShell active="dro">
     <header className="topbar dro-topbar">
       <div><p className="eyebrow">DAILY ROUTE OPERATIONS</p><h1>DRO</h1><p className="page-intro">Browse route plans by operational date and node-worker snapshot.</p></div>
-      {canManage && <div className="header-actions"><button type="button" className="secondary" disabled={loading || collecting} onClick={() => void collectLiveDro()}>{collecting ? "Collecting…" : "↻ Refresh"}</button></div>}
+      {canManage && <div className="header-actions"><button type="button" className="secondary" title={manualRefreshAllowed ? "Collect a DRO snapshot now" : DRO_REFRESH_WINDOW_MESSAGE} disabled={loading || collecting || !manualRefreshAllowed} onClick={() => void collectLiveDro()}>{collecting ? "Collecting…" : "↻ Refresh"}</button>{!manualRefreshAllowed && <small className="dro-refresh-window">DRO refresh available 8:00 PM–11:59 PM CT</small>}</div>}
     </header>
     {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError("")} aria-label="Dismiss error">×</button></div>}
     {assignmentError && <div className="error-banner" role="alert">{assignmentError}<button onClick={() => setAssignmentError("")} aria-label="Dismiss assignment error">×</button></div>}
@@ -457,7 +466,7 @@ export default function DroPage() {
     </section>}
 
     {!snapshot && !loading ? <section className="fleet-card dro-empty-state">
-      <span>▤</span><h2>{selectedDate ? `No DRO data for ${formatOperationalDate(selectedDate)}` : "Waiting for DRO data"}</h2><p>{selectedDate ? "No snapshots were collected for this operational date. Use Previous Day, Next Day, or the calendar to choose another date." : "Routes will appear here automatically after a node worker saves the first DRO snapshot."}</p>{dateIndex.latestDate && selectedDate !== dateIndex.latestDate ? <button type="button" className="secondary" onClick={() => void chooseDate(dateIndex.latestDate as string)}>Return to latest date</button> : canManage ? <button type="button" className="secondary" disabled={collecting} onClick={() => void collectLiveDro()}>{collecting ? "Collecting…" : "Collect DRO now"}</button> : <button type="button" className="secondary" onClick={() => void reloadStoredData()}>Check again</button>}
+      <span>▤</span><h2>{selectedDate ? `No DRO data for ${formatOperationalDate(selectedDate)}` : "Waiting for DRO data"}</h2><p>{selectedDate ? "No snapshots were collected for this operational date. Use Previous Day, Next Day, or the calendar to choose another date." : "Routes will appear here automatically after a node worker saves the first DRO snapshot."}</p>{dateIndex.latestDate && selectedDate !== dateIndex.latestDate ? <button type="button" className="secondary" onClick={() => void chooseDate(dateIndex.latestDate as string)}>Return to latest date</button> : canManage ? <button type="button" className="secondary" title={manualRefreshAllowed ? "Collect a DRO snapshot now" : DRO_REFRESH_WINDOW_MESSAGE} disabled={collecting || !manualRefreshAllowed} onClick={() => void collectLiveDro()}>{collecting ? "Collecting…" : "Collect DRO now"}</button> : <button type="button" className="secondary" onClick={() => void reloadStoredData()}>Check again</button>}
     </section> : <>
       {snapshot?.errorMessage && <div className="error-banner" role="alert">Worker message: {snapshot.errorMessage}</div>}
 
@@ -487,11 +496,13 @@ export default function DroPage() {
                 const routeNumber = row.routeNumber || row.registeredRouteNumber;
                 const driver = routeNumber ? driverByRoute.get(routeNumber) : undefined;
                 const color = colorFor(routeNumber);
-                const capacityPercent = row.vehicleCapacity > 0 ? Math.round((row.usedCapacity / row.vehicleCapacity) * 100) : 0;
-                return <tr key={row.id} className={row.warning ? "dro-warning-row" : ""}>
+                const utilization = capacityUtilization(row.usedCapacity, row.vehicleCapacity);
+                const capacityPercent = utilization === null ? 0 : Math.max(0, utilization * 100);
+                const capacityWarning = hasCapacityWarning(row.usedCapacity, row.vehicleCapacity);
+                return <tr key={row.id} className={capacityWarning ? "dro-warning-row" : ""}>
                   <td>{canManage && routeNumber ? <select className="dro-driver-select" aria-label={`Driver for route ${routeNumber}`} value={driver?.teamMemberId || ""} disabled={Boolean(savingAssignment) || assignmentsLoading || refetchingAssignments} title={driver?.homebase ? `Homebase: ${driver.homebase.rawAssignment}` : "No Homebase assignment"} onChange={event => void swapAssignment({ type: "route", routeNumber }, Number(event.target.value), driver?.teamMemberId)}><option value="" disabled>{assignmentsLoading ? "Loading assignments…" : "Unassigned"}</option>{assignmentBoard?.members.map(member => <option key={member.teamMemberId} value={member.teamMemberId}>{member.teamMemberId === driver?.teamMemberId ? member.name : `${member.name} — ${member.assignmentLabel}`}</option>)}</select> : <strong className="dro-driver-name" title={driver?.homebase ? `Homebase: ${driver.homebase.rawAssignment}` : undefined}>{assignmentsLoading ? "Loading assignments…" : driver?.name || "Unassigned"}</strong>}</td>
                   <td><span className="dro-driver-route-meta">{routeNumber ? <strong className="route-number-badge" style={{ backgroundColor: color, color: routeTextColor(color) }}>{routeNumber}</strong> : <span className="route-unassigned">Unmapped</span>}{driver?.source === "manual" && <span className="assignment-source" title={`Homebase: ${driver.homebase?.rawAssignment || "not assigned"}`}>Manual</span>}{canManage && driver?.source === "manual" && driver.homebase && <button type="button" className="restore-homebase" disabled={Boolean(savingAssignment) || refetchingAssignments} title={`Use Homebase assignment: ${driver.homebase.rawAssignment}`} onClick={() => void restoreHomebase(driver.teamMemberId)}>↺</button>}</span></td>
-                  <td><div className="dro-capacity"><strong>{formatNumber(row.usedCapacity)} / {formatNumber(row.vehicleCapacity)}</strong><span aria-hidden="true"><i style={{ width: `${Math.min(capacityPercent, 100)}%` }} /></span>{row.warning && <span className="sr-only">Capacity warning</span>}</div></td>
+                  <td><div className="dro-capacity"><strong>{formatNumber(row.usedCapacity)} / {formatNumber(row.vehicleCapacity)}</strong><span aria-hidden="true"><i style={{ width: `${Math.min(capacityPercent, 100)}%` }} /></span>{capacityWarning && <span className="sr-only">Capacity warning</span>}</div></td>
                   <td><strong className="dro-primary-value">{formatNumber(row.totalPackages)}</strong></td>
                   <td><div className="dro-stop-values" aria-label={`${row.totalStops} total stops, ${row.pickupStops} pickup stops, ${row.combinationStops} combination stops`}><strong>{row.totalStops}</strong><span>|</span><strong>{row.pickupStops}</strong><span>|</span><strong>{row.combinationStops}</strong></div></td>
                   <td><div className="dro-route-details"><strong>{row.routeTime || "—"}</strong><span>•</span><strong>{row.distance !== null ? `${formatNumber(row.distance)} mi` : "—"}</strong></div></td>
