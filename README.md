@@ -58,11 +58,13 @@ journalctl -u kvc-fleet -n 100 --no-pager
 
 ## Remote access
 
-The application itself does not yet have user authentication. Do not expose
-port 3000 directly to the internet. Place it behind a private VPN, Cloudflare
-Access, or Caddy with authentication. `deploy/Caddyfile.example` is a starting
-point. Generate its password hash with `caddy hash-password`, replace the
-placeholder and domain, then validate and reload Caddy.
+The service listens on the LXC network interfaces. From another device on the
+same private network, open `http://10.10.10.105:3000`.
+
+The application requires an authenticated account for every operational page.
+`deploy/Caddyfile.example` configures Caddy to terminate HTTPS for
+`fleet.sleepingpandaind.com` and proxy to the local app. Keep port 3000 private;
+only Caddy should be exposed to the internet.
 
 ## Data and backups
 
@@ -85,6 +87,260 @@ sudo -u kvcfleet env DATABASE_URL=file:/var/lib/kvc-fleet/fleet.db npm run db:mi
 
 ## Updating later
 
-Stop the service, back up the database, replace the application files with the
-new archive, and rerun `deploy/install.sh`. Application updates do not overwrite
-the database in `/var/lib/kvc-fleet`.
+From Windows PowerShell, first make sure the SSH key is loaded in your agent:
+
+```powershell
+ssh-add -l
+```
+
+Then deploy the current project to the KVC Fleet LXC with one command:
+
+```powershell
+.\deploy\deploy-to-lxc.ps1
+```
+
+The script packages only the application source, connects to
+`root@10.10.10.105` through your SSH agent, and builds the update in a staging
+directory. Before switching releases, it stops the service and creates a
+timestamped database backup in `/var/backups/kvc-fleet`. It automatically
+restores the previous application and database if migration, startup, or the
+health check fails.
+
+The deployment and first-install builds cap Node's V8 build heap at 512 MB so
+they fit in the 2 GB KVC LXC without requiring swap. This cap applies only while
+compiling the release; the running service remains unchanged.
+
+To validate packaging locally without connecting to the LXC:
+
+```powershell
+.\deploy\deploy-to-lxc.ps1 -CheckOnly
+```
+
+To use a different server or SSH account:
+
+```powershell
+.\deploy\deploy-to-lxc.ps1 -ServerAddress 10.10.10.105 -RemoteUser root
+```
+
+## Homebase and DRO integration storage
+
+The migration creates a canonical `routes` registry while retaining the
+existing vehicle and team route columns for compatibility. Existing route
+settings, vehicle assignments, and regular/Saturday/Sunday team routes are
+backfilled automatically with `INSERT OR IGNORE`, so deployments are safe to
+repeat.
+
+The external Homebase collector submits a complete collected range to
+`POST /api/internal/homebase/schedule`. Fleet Manager identifies people with
+stable Homebase user IDs, initially auto-matches an exact normalized Team name,
+and persists that mapping. Shifts upsert by Homebase shift ID, and shifts that
+disappear from a later complete range are reconciled without deleting manual
+Fleet assignment overrides.
+
+The endpoint requires `Authorization: Bearer <token>` matching
+`HOMEBASE_INGEST_TOKEN`. Store it in `/etc/kvc-fleet/homebase.env`; never place
+the token, Homebase credentials, cookies, or browser profiles in this repository.
+Recommended permissions are:
+
+```bash
+install -d -o root -g kvcfleet -m 0750 /etc/kvc-fleet
+printf '%s\n' 'HOMEBASE_INGEST_TOKEN=replace-with-a-long-random-token' \
+  > /etc/kvc-fleet/homebase.env
+chown root:kvcfleet /etc/kvc-fleet/homebase.env
+chmod 0640 /etc/kvc-fleet/homebase.env
+systemctl restart kvc-fleet
+```
+
+Fleet Managers can use **Refetch Assignments** from the DRO page. This asks a
+separate localhost-only Homebase collector control service to collect a fresh
+schedule using its already-running authenticated Chrome/CDP session; Fleet
+Manager never starts or restarts Chrome itself. The request includes the selected
+operational date; the collector must return a range containing that day (normally
+the current and next week). Configure the matching control token in the protected
+same file:
+
+```text
+HOMEBASE_COLLECTOR_URL=http://127.0.0.1:3102/collect
+HOMEBASE_COLLECTOR_TOKEN=the-same-secret-configured-in-the-external-collector
+```
+
+The external collector's `POST /collect` control endpoint must only listen on
+`127.0.0.1`, require `Authorization: Bearer <HOMEBASE_COLLECTOR_TOKEN>`, reject
+overlapping requests with `409` and `{"error":"collection_in_progress"}`, reuse
+its persistent Homebase Chrome session, post the collected schedule to Fleet
+Manager's existing internal ingestion endpoint, then return:
+
+```json
+{
+  "ok": true,
+  "rangeStart": "2026-08-24",
+  "rangeEnd": "2026-08-30",
+  "collectedAt": "2026-08-29T01:00:00.000Z",
+  "imported": 0,
+  "updated": 0,
+  "unchanged": 0,
+  "removed": 0,
+  "dates": ["2026-08-29"],
+  "routeAssignments": 0,
+  "specialAssignments": 0
+}
+```
+
+Fleet Manager exposes `POST /api/homebase/refresh` to Fleet Managers only. It
+is a server-side proxy to that local control service and never sends tokens to
+the browser. This operation refreshes Homebase staffing only; it never creates
+or refreshes a DRO snapshot.
+
+Manual **Refresh DRO** is available only from 8:00 PM through 11:59 PM Central
+Time. The button and server endpoint both enforce this window; outside it the
+endpoint returns `403` and does not call the collector.
+
+Safe example request body:
+
+```json
+{
+  "rangeStart": "2026-08-24",
+  "rangeEnd": "2026-08-30",
+  "collectedAt": "2026-08-23T23:15:00.000Z",
+  "shifts": [
+    {
+      "homebaseShiftId": "fake-shift-1001",
+      "homebaseUserId": "fake-user-2001",
+      "homebaseJobId": "fake-job-621",
+      "date": "2026-08-29",
+      "employee": "JOSHUA EXAMPLE",
+      "firstName": "JOSHUA",
+      "lastName": "EXAMPLE",
+      "startAt": "2026-08-29T13:00:00.000Z",
+      "endAt": "2026-08-29T22:00:00.000Z",
+      "assignment": "621",
+      "route": "621",
+      "type": "route",
+      "confidence": "high",
+      "note": "Safe fake example",
+      "publishedStatus": "published"
+    }
+  ]
+}
+```
+
+`homebaseJobId`, `firstName`, `lastName`, `route`, `type`, `confidence`, `note`,
+and `publishedStatus` are optional. Stable shift/user IDs, date, employee,
+timestamps, and raw assignment are required. A successful response reports
+`imported`, `updated`, `unchanged`, `removed`, `dates`, `routeAssignments`, and
+`specialAssignments`.
+
+DRO operational dates are based on the capture time in `America/Chicago`.
+Captures from 8:00 PM through 11:59:59 PM are assigned to the following calendar
+day, so Saturday-evening preparation belongs to Sunday staffing. The capture
+timestamp remains unchanged. The migration corrects existing snapshot date
+indexes from their stored capture timestamps without changing snapshot IDs or
+route-row history.
+
+Snapshots stay immutable; the existing after-11-PM (through 11:59:59 PM)
+deduplication may reuse the newest identical snapshot rather than creating
+duplicate database rows. Capacity warnings are calculated from each route's
+actual vehicle capacity and appear at 50% utilization or higher. Collector/browser
+automation and credentials intentionally remain outside this application layer.
+
+The external Playwright/PurpleID collector is not stored in this repository.
+Configure that collector to run at `20:00`, `20:30`, `21:00`, `21:30`, `22:00`,
+`22:30`, and `23:00` in `America/Chicago`. Each run must create a new immutable
+snapshot; it must never update or replace an earlier collection. Do not copy
+collector credentials, cookies, profiles, passwords, tokens, or browser state
+into this repository.
+
+The collector submits snapshots to `POST /api/internal/dro/snapshot` with an
+`Authorization: Bearer <token>` header. Fleet Manager reads the matching
+`DRO_INGEST_TOKEN` from `/etc/kvc-fleet/dro.env`; this endpoint deliberately
+does not use an interactive user session. Cube usage, package totals, stop
+totals, and capacity warnings are calculated by Fleet Manager rather than
+trusted from collector-provided totals.
+
+The systemd unit treats `/etc/kvc-fleet/dro.env` as an optional protected
+environment file. Preserve every existing credential in that file and add or
+update only the `DRO_INGEST_TOKEN` entry. The deployment package and deployment
+script never copy that file. Recommended ownership and permissions are:
+
+```bash
+chown root:kvcfleet /etc/kvc-fleet/dro.env
+chmod 0640 /etc/kvc-fleet/dro.env
+systemctl daemon-reload
+systemctl restart kvc-fleet
+```
+
+## Monitor / MGBA DSW integration
+
+The Monitor page stores immutable Daily Service Wk & Vision IBPR (DSW) snapshots
+received from the separate MGBA worker. It does not manage the worker, browser,
+or any FedEx authentication. Configure its ingestion secret in a separate,
+protected file on the LXC:
+
+```bash
+install -d -o root -g kvcfleet -m 0750 /etc/kvc-fleet
+printf '%s\n' 'MGBA_INGEST_TOKEN=replace-with-a-long-random-token' > /etc/kvc-fleet/mgba.env
+printf '%s\n' 'MGBA_WORKER_URL=http://127.0.0.1:3102' >> /etc/kvc-fleet/mgba.env
+chown root:kvcfleet /etc/kvc-fleet/mgba.env
+chmod 0640 /etc/kvc-fleet/mgba.env
+systemctl daemon-reload
+systemctl restart kvc-fleet
+```
+
+The external MGBA collector must POST completed snapshots to
+`POST /api/internal/mgba/snapshot` with `Authorization: Bearer
+<MGBA_INGEST_TOKEN>`. The request body is:
+
+```json
+{
+  "source": "MGBA_DSW",
+  "operationalDate": "2026-08-29",
+  "dswDate": "08/29/2026",
+  "capturedAt": "2026-08-29T16:00:00.000Z",
+  "routeCount": 1,
+  "routes": [{
+    "serviceArea": "631",
+    "waName": "Example WA",
+    "vehicleNumber": "415659 431928",
+    "driverName": "Driver Name",
+    "route": "621",
+    "rawRoute": "000621",
+    "dst": null,
+    "vscanPkgs": 120,
+    "delStops": 80,
+    "puStops": null,
+    "diff": 0,
+    "actDelStops": 74,
+    "actDelPkgs": 110,
+    "actPuStops": null,
+    "actPuPkgs": null,
+    "ilsPercent": 98.4,
+    "allStatusCodePkgs": 6
+  }]
+}
+```
+
+Blank source fields must be sent as `null`, not zero. `vehicleNumber` is text
+and may contain more than one ID. The application deduplicates identical route
+state for an operational day, preserving changed source snapshots as history.
+Fleet Managers may request a manual collection through the application; that
+server-side request proxies only to the localhost MGBA worker at
+`POST /collect?date=MM/DD/YYYY` and never exposes secrets to the browser.
+
+Authenticated read endpoints are available at:
+
+- `GET /api/routes` — route registry with current vehicle plus available driver
+  and latest DRO details
+- `GET /api/homebase/assignments` — tomorrow's assignments; add
+  `?date=YYYY-MM-DD` for a specific date
+- `GET /api/dro/latest` — latest snapshot and all of its route rows
+- `GET /api/dro/dates` — available operational dates with snapshot counts
+- `GET /api/dro/date?date=YYYY-MM-DD` — snapshots plus previous/next available
+  dates for an operational day
+- `GET /api/dro/snapshot?id=123` — one immutable snapshot and its route rows
+- `GET /api/dro/assignments?date=YYYY-MM-DD` — the effective daily staffing board
+- `POST /api/dro/assignments/swap` — Fleet Manager assignment swap
+- `POST /api/dro/assignments/reset` — reset one date to imported Homebase
+- `POST /api/dro/assignments/restore` — restore one person to Homebase
+- `POST /api/internal/dro/snapshot` — bearer-authenticated snapshot ingestion
+- `POST /api/internal/homebase/schedule` — bearer-authenticated weekly schedule ingestion
+  for the external collector

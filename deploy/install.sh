@@ -31,16 +31,19 @@ if ! id kvcfleet >/dev/null 2>&1; then
 fi
 
 install -d -o kvcfleet -g kvcfleet -m 0750 "${APP_DIR}" "${DATA_DIR}" "${BACKUP_DIR}"
+install -d -o root -g kvcfleet -m 0750 /etc/kvc-fleet
 chown -R kvcfleet:kvcfleet "${APP_DIR}"
 
 runuser -u kvcfleet -- npm install --no-audit --no-fund
 runuser -u kvcfleet -- env DATABASE_URL="file:${DATA_DIR}/fleet.db" npm run db:migrate
-runuser -u kvcfleet -- npm run build
+# Installation builds run inside the same small LXC profile as deployments.
+# Limit V8's old-space heap so the kernel does not terminate the compiler.
+runuser -u kvcfleet -- env NODE_OPTIONS="--max-old-space-size=512" npm run build
 runuser -u kvcfleet -- npm prune --omit=dev
 
 install -o root -g root -m 0644 deploy/kvc-fleet.service "${SERVICE_FILE}"
 systemctl daemon-reload
 systemctl enable --now kvc-fleet
 
-echo "KVC Fleet is running on http://127.0.0.1:3000"
-echo "Next: configure Caddy or a private tunnel before allowing remote access."
+echo "KVC Fleet is running on port 3000 and is reachable from the local network."
+echo "Do not forward port 3000 to the internet without adding authentication."
