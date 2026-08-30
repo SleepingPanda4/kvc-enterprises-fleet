@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "../auth/AuthGate";
 import { AppShell } from "../components/AppShell";
@@ -155,6 +155,8 @@ export default function DroPage() {
   const assignmentCollectionGuard = useRef(new LiveDroRefreshGuard());
   const snapshotRequest = useRef(0);
   const selectedDateRef = useRef(selectedDate);
+  const routeListRef = useRef<HTMLElement>(null);
+  const [routeListHeight, setRouteListHeight] = useState(0);
   const { key: sortKey, direction: sortDirection } = manualSort || requestedSort;
   const canManage = user?.role === "Fleet Manager";
 
@@ -183,6 +185,17 @@ export default function DroPage() {
   useEffect(() => {
     selectedDateRef.current = selectedDate;
   }, [selectedDate]);
+
+  useLayoutEffect(() => {
+    const routeList = routeListRef.current;
+    if (!routeList) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const height = Math.round(entry.contentRect.height);
+      setRouteListHeight(current => current === height ? current : height);
+    });
+    observer.observe(routeList);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const refreshClockTimer = window.setInterval(() => setRefreshClock(new Date()), 1000);
@@ -480,8 +493,8 @@ export default function DroPage() {
         <article className={totals.warnings ? "warning" : ""}><small>CAPACITY WARNINGS</small><strong>{totals.warnings}</strong><p>{totals.warnings ? "Routes requiring attention" : "No flagged routes"}</p></article>
       </section>
 
-      <div className="dro-board-grid">
-      <section className="fleet-card dro-routes-card">
+      <div className="dro-board-grid" style={routeListHeight ? { "--dro-route-list-height": `${routeListHeight}px` } as CSSProperties : undefined}>
+      <section className="fleet-card dro-routes-card" ref={routeListRef}>
         <div className="fleet-head"><div><h2>Route list</h2><p>{snapshot ? `Source timestamp: ${formatTimestamp(selectedSnapshotTimestamp(snapshot))}` : "Loading the selected route rows."}</p></div><label className="search">⌕ <input value={search} onChange={event => setSearch(event.target.value)} aria-label="Search DRO routes" placeholder="Search route, WA, or type" /></label></div>
         <div className="table-wrap">
           <table className="dro-table">

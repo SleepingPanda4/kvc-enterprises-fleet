@@ -22,7 +22,7 @@ import { clearDroRouteSelection, selectDroRouteRow, selectedDroRouteRowId } from
 import { mgbaDswRoutesAreIdentical } from "../services/integrations/mgba-dsw-deduplication";
 import { normalizeMgbaDswRoute, normalizeMgbaRouteNumber } from "../services/integrations/mgba-dsw-normalization";
 import { MgbaCollectorError, requestMgbaCollection } from "../services/integrations/mgba-collector";
-import { MONITOR_SORT_KEYS, compareNullable, nextMonitorSort } from "../app/monitor/sorting";
+import { compareMonitorRouteNumbers, DEFAULT_MONITOR_SORT, MONITOR_SORT_KEYS, compareNullable, nextMonitorSort } from "../app/monitor/sorting";
 
 const projectRoot = new URL("../", import.meta.url);
 
@@ -82,6 +82,10 @@ test("MGBA DSW normalization, deduplication, sorting, and worker errors preserve
   assert.equal(mgbaDswRoutesAreIdentical([normalized], [{ ...normalized, allStatusCodePkgs: 8 }]), false, "Status packages are an independent source field");
   assert.equal(mgbaDswRoutesAreIdentical([normalized, { ...normalized, driverName: "Driver Two" }], [{ ...normalized, driverName: "Driver Two" }, normalized]), true, "Row ordering does not affect deduplication");
   assert.equal(compareNullable(null, 0, "asc"), 1);
+  assert.deepEqual(DEFAULT_MONITOR_SORT, { key: "route", direction: "asc" });
+  assert.deepEqual(["1127", "617", "625", "621"].sort((left, right) => compareMonitorRouteNumbers(left, right, "asc")), ["617", "621", "625", "1127"], "Monitor route sorting is numeric by default");
+  assert.deepEqual(nextMonitorSort(DEFAULT_MONITOR_SORT, "route"), { key: "route", direction: "desc" });
+  assert.deepEqual(nextMonitorSort({ key: "route", direction: "desc" }, "route"), { key: "route", direction: "asc" });
   assert.equal(nextMonitorSort(null, "vscan").direction, "desc");
   assert.equal(MONITOR_SORT_KEYS.includes("vscan"), true);
   assert.equal((MONITOR_SORT_KEYS as readonly string[]).includes("allStatusCodePkgs"), false, "All Status Code Pkgs is intentionally not sortable");
