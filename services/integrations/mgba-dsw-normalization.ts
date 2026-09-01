@@ -7,9 +7,9 @@ export function normalizeMgbaRouteNumber(value: string | null) {
 }
 
 export function normalizeMgbaDswRoute(row: ComparableMgbaDswRoute): ComparableMgbaDswRoute {
-  const text = (value: string | null) => value?.trim() || null;
+  const text = (value: string | null | undefined) => value?.trim() || null;
   return { serviceArea: text(row.serviceArea), waName: text(row.waName), vehicleNumber: text(row.vehicleNumber), driverName: row.driverName.trim(),
     routeNumber: normalizeMgbaRouteNumber(row.routeNumber), rawRoute: text(row.rawRoute), dst: text(row.dst),
     vscanPkgs: row.vscanPkgs, delStops: row.delStops, puStops: row.puStops, diff: row.diff, actDelStops: row.actDelStops,
-    actDelPkgs: row.actDelPkgs, actPuStops: row.actPuStops, actPuPkgs: row.actPuPkgs, ilsPercent: row.ilsPercent, allStatusCodePkgs: row.allStatusCodePkgs, driverOrder: row.driverOrder ?? 0 };
+    actDelPkgs: row.actDelPkgs, actPuStops: row.actPuStops, actPuPkgs: row.actPuPkgs, ilsPercent: row.ilsPercent, nextAvailOnDuty: text(row.nextAvailOnDuty), allStatusCodePkgs: row.allStatusCodePkgs, driverOrder: row.driverOrder ?? 0 };
 }

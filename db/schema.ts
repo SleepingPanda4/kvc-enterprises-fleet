@@ -47,7 +47,22 @@ export const issues = sqliteTable("issues", {
   serviceScheduled: integer("service_scheduled", { mode: "boolean" }).notNull().default(false),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   resolvedAt: text("resolved_at"),
+  resolutionNotes: text("resolution_notes"),
+  reportedByUserId: integer("reported_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  reportedByName: text("reported_by_name"),
 });
+
+export const issueAttachments = sqliteTable("issue_attachments", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  publicId: text("public_id").notNull(),
+  issueId: integer("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
+  originalFilename: text("original_filename").notNull(),
+  storedFilename: text("stored_filename").notNull(),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  context: text("context", { enum: ["report", "resolution", "update"] }).notNull().default("report"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, table => [index("issue_attachments_issue_idx").on(table.issueId), uniqueIndex("issue_attachments_public_id_unique").on(table.publicId)]);
 
 export const teamMembers = sqliteTable("team_members", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -59,10 +74,15 @@ export const teamMembers = sqliteTable("team_members", {
   regularRoute: text("regular_route"),
   saturdayRoute: text("saturday_route"),
   sundayRoute: text("sunday_route"),
+  dswDriverName: text("dsw_driver_name"),
   role: text("role", { enum: ["Team Member", "Fleet Manager"] }).notNull().default("Team Member"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, table => [
+  uniqueIndex("team_members_dsw_driver_name_unique")
+    .on(table.dswDriverName)
+    .where(sql`${table.dswDriverName} IS NOT NULL`),
+]);
 
 export const homebaseUserMappings = sqliteTable("homebase_user_mappings", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -205,14 +225,17 @@ export const users = sqliteTable("users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   teamMemberId: integer("team_member_id").references(() => teamMembers.id, { onDelete: "set null" }),
   name: text("name").notNull(),
+  nickname: text("nickname"),
+  fedexId: text("fedex_id"),
+  profileImageId: text("profile_image_id"),
   email: text("email").notNull().unique(),
   phoneNumber: text("phone_number").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
-  role: text("role", { enum: ["Team Member", "Fleet Manager"] }).notNull().default("Team Member"),
+  role: text("role", { enum: ["Team Member", "Fleet Manager", "FLEET_OWNER"] }).notNull().default("Team Member"),
   verifiedAt: text("verified_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, table => [uniqueIndex("users_team_member_unique").on(table.teamMemberId)]);
+}, table => [uniqueIndex("users_team_member_unique").on(table.teamMemberId), uniqueIndex("users_fedex_id_unique").on(table.fedexId)]);
 
 export const authSessions = sqliteTable("auth_sessions", {
   tokenHash: text("token_hash").primaryKey(),
@@ -220,6 +243,28 @@ export const authSessions = sqliteTable("auth_sessions", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   lastUsedAt: text("last_used_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const siteSettings = sqliteTable("site_settings", { id: integer("id").primaryKey(), companyName: text("company_name").notNull().default("KVC Enterprises"), identityMode: text("identity_mode").notNull().default("name"), primaryColor: text("primary_color").notNull().default("#087A46"), sidebarColor: text("sidebar_color").notNull().default("#102A20"), accentColor: text("accent_color").notNull().default("#F2C14E"), logoImageId: text("logo_image_id"), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`), updatedByUserId: integer("updated_by_user_id").references(() => users.id, { onDelete: "set null" }) });
+export const storedImages = sqliteTable("stored_images", { id: text("id").primaryKey(), kind: text("kind").notNull(), storedFilename: text("stored_filename").notNull(), mimeType: text("mime_type").notNull(), sizeBytes: integer("size_bytes").notNull(), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`) });
+
+export const integrationCredentials = sqliteTable("integration_credentials", {
+  integration: text("integration", { enum: ["MGBA", "HOMEBASE"] }).primaryKey(),
+  username: text("username").notNull().default(""),
+  passwordCiphertext: text("password_ciphertext"),
+  passwordIv: text("password_iv"),
+  passwordTag: text("password_tag"),
+  encryptionVersion: text("encryption_version"),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedByUserId: integer("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+});
+
+export const integrationCredentialAudit = sqliteTable("integration_credential_audit", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  integration: text("integration", { enum: ["MGBA", "HOMEBASE"] }).notNull(),
+  action: text("action").notNull(),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, table => [index("integration_credential_audit_integration_idx").on(table.integration)]);
 
 export const mgbaDswSnapshots = sqliteTable("mgba_dsw_snapshots", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -255,6 +300,7 @@ export const mgbaDswRouteRows = sqliteTable("mgba_dsw_route_rows", {
   actPuStops: integer("act_pu_stops"),
   actPuPkgs: integer("act_pu_pkgs"),
   ilsPercent: real("ils_percent"),
+  nextAvailOnDuty: text("next_avail_on_duty"),
   allStatusCodePkgs: integer("all_status_code_pkgs"),
   driverOrder: integer("driver_order").notNull().default(0),
   statusPackagesState: text("status_packages_state", { enum: ["not_applicable", "captured", "incomplete", "failed"] }).notNull().default("not_applicable"),

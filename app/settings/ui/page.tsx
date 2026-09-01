@@ -1,0 +1,2 @@
+import { headers } from "next/headers";import { redirect } from "next/navigation";import { getCurrentUser } from "../../auth/server";import { isFleetOwner } from "../../auth/roles";import { UiSettingsApp } from "./UiSettingsApp";
+export default async function Page(){const user=await getCurrentUser(new Request("http://localhost/settings/ui",{headers:await headers()}));if(!user||!isFleetOwner(user.role))redirect("/settings/account");return <UiSettingsApp/>}

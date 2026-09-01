@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "../auth/AuthGate";
+import { canManageFleet } from "../auth/roles";
 import { AppShell } from "../components/AppShell";
 import { routeTextColor } from "../routes/config";
 import { useRouteColors } from "../routes/useRouteColors";
@@ -158,7 +159,7 @@ export default function DroPage() {
   const routeListRef = useRef<HTMLElement>(null);
   const [routeListHeight, setRouteListHeight] = useState(0);
   const { key: sortKey, direction: sortDirection } = manualSort || requestedSort;
-  const canManage = user?.role === "Fleet Manager";
+  const canManage = canManageFleet(user?.role);
 
   useEffect(() => {
     let cancelled = false;

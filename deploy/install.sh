@@ -30,7 +30,7 @@ if ! id kvcfleet >/dev/null 2>&1; then
   useradd --system --home /opt/kvc-fleet --shell /usr/sbin/nologin kvcfleet
 fi
 
-install -d -o kvcfleet -g kvcfleet -m 0750 "${APP_DIR}" "${DATA_DIR}" "${BACKUP_DIR}"
+install -d -o kvcfleet -g kvcfleet -m 0750 "${APP_DIR}" "${DATA_DIR}" "${BACKUP_DIR}" "${DATA_DIR}/uploads/issues"
 install -d -o root -g kvcfleet -m 0750 /etc/kvc-fleet
 chown -R kvcfleet:kvcfleet "${APP_DIR}"
 

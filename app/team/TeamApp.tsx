@@ -3,8 +3,10 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AppShell } from "../components/AppShell";
 import { useAuth } from "../auth/AuthGate";
+import { canManageFleet } from "../auth/roles";
 import { routeTextColor } from "../routes/config";
 import { useRouteColors } from "../routes/useRouteColors";
+import { UserAvatar } from "../components/UserAvatar";
 
 type TeamMember = {
   id: number;
@@ -16,7 +18,10 @@ type TeamMember = {
   regularRoute: string | null;
   saturdayRoute: string | null;
   sundayRoute: string | null;
+  dswDriverName: string | null;
   role: "Team Member" | "Fleet Manager";
+  profileImageId: string | null;
+  fedexId: string | null;
 };
 
 const routes = [
@@ -56,13 +61,9 @@ function memberRoutes(member: TeamMember) {
   return [...new Set([member.regularRoute, member.saturdayRoute, member.sundayRoute].filter(Boolean))] as string[];
 }
 
-function initials(name: string) {
-  return name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join("") || "TM";
-}
-
 export function TeamApp() {
   const { user } = useAuth();
-  const canManage = user?.role === "Fleet Manager";
+  const canManage = canManageFleet(user?.role);
   const { colorFor } = useRouteColors();
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [loading, setLoading] = useState(true);
@@ -153,7 +154,7 @@ export function TeamApp() {
                 : visibleMembers.length === 0
                   ? <tr><td colSpan={canManage ? 6 : 5} className="empty team-empty"><strong>{members.length ? "No team members match your search." : "Your team roster is ready."}</strong><span>{members.length ? "Try a different name, available day, phone number, or route." : canManage ? "Use Add team member to add the first person." : "No team members have been added yet."}</span></td></tr>
                   : visibleMembers.map(member => <tr key={member.id}>
-                    <td><div className="member-identity"><span className="member-avatar">{initials(member.name)}</span><div><strong>{member.name}</strong><small>{member.role}</small></div></div></td>
+                    <td><div className="member-identity"><UserAvatar name={member.name} imageId={member.profileImageId} /><div><strong>{member.name}{member.fedexId && <span className="member-fedex-id"> · FedEx ID: {member.fedexId}</span>}</strong><small>{member.role}</small></div></div></td>
                     <td><span className="nickname">{member.nickname || "—"}</span></td>
                     <td><div className="contact-stack"><a className="phone-link" href={`tel:${member.phoneNumber.replace(/[^\d+]/g, "")}`}>{member.phoneNumber}</a>{member.email && <a href={`mailto:${member.email}`}>{member.email}</a>}</div></td>
                     <td><span className={member.availabilityDays.length ? "availability-pill" : "availability-pill unset"}>{availabilityLabel(member.availabilityDays)}</span></td>
@@ -212,6 +213,7 @@ function TeamMemberModal({ member, onClose, onSaved, onRemove }: { member?: Team
         <label>Nickname<input name="nickname" autoComplete="off" defaultValue={member?.nickname ?? ""} placeholder="Optional" /></label>
         <label>Phone number<input name="phoneNumber" required type="tel" inputMode="tel" autoComplete={editing ? "tel" : "off"} value={phoneNumber} onChange={event => setPhoneNumber(formatPhoneInput(event.target.value))} placeholder="(555) 555-0123" /></label>
         <label>Email<input name="email" type="email" autoComplete={editing ? "email" : "off"} defaultValue={member?.email ?? ""} placeholder="Optional" /></label>
+        <label className="wide">DSW Driver Name<input name="dswDriverName" autoComplete="off" defaultValue={member?.dswDriverName ?? ""} placeholder="Exact Monitor driver name, e.g. GALLAGHER,WILLIAM RONAN" /><small className="field-hint">Optional. Used only to safely connect this person to their Monitor call button.</small></label>
         <AvailabilityPicker selected={availabilityDays} onChange={setAvailabilityDays} />
         <label className="wide">Regular route<select name="regularRoute" defaultValue={member?.regularRoute ?? ""}><option value="">No regular route</option>{routes.map(route => <option key={route} value={route}>{route}</option>)}</select><small className="field-hint">Leave unassigned if they regularly cover different routes.</small></label>
         {availabilityDays.includes("Sat") && <label>Saturday route<select name="saturdayRoute" defaultValue={member?.saturdayRoute ?? ""}><option value="">Use regular route</option>{routes.map(route => <option key={route} value={route}>{route}</option>)}</select></label>}
@@ -250,7 +252,7 @@ function ConfirmRemoveDriverModal({ member, onClose, onRemoved }: { member: Team
       <p className="eyebrow">REMOVE DRIVER</p>
       <h2 id="remove-driver-title">Are you sure?</h2>
       <p id="remove-driver-description">Remove {member.name} from the Team roster? Their schedule assignments will be removed. If they have a login account, access and active sessions will also be revoked.</p>
-      <div className="delete-summary"><span className="member-avatar">{initials(member.name)}</span><div><strong>{member.name}</strong><span>{member.role}{member.regularRoute ? ` · Route ${member.regularRoute}` : ""}</span></div></div>
+      <div className="delete-summary"><UserAvatar name={member.name} imageId={member.profileImageId}/><div><strong>{member.name}</strong><span>{member.role}{member.regularRoute ? ` · Route ${member.regularRoute}` : ""}</span></div></div>
       {removeError && <p className="form-error" role="alert">{removeError}</p>}
       <div className="form-actions"><button type="button" className="secondary" onClick={onClose}>Keep driver</button><button type="button" className="danger" disabled={removing} onClick={() => void removeDriver()}>{removing ? "Removing…" : "Yes, remove driver"}</button></div>
     </section>

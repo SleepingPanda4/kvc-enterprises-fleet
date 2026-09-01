@@ -92,6 +92,8 @@ test("local SQLite migration is repeatable and creates required indexes", async 
       "dro_route_rows_snapshot_wa_unique",
       "dro_snapshots_operational_date_captured_at_idx",
       "mgba_dsw_snapshots_operational_date_captured_at_idx",
+      "team_members_dsw_driver_name_unique",
+      "users_fedex_id_unique",
     ]) assert.ok(names.has(name), `Missing ${name}`);
     const homebaseShiftColumns = await client.execute("PRAGMA table_info(homebase_shifts)");
     for (const column of ["employee_first_name", "employee_last_name", "confidence"]) {
@@ -102,8 +104,13 @@ test("local SQLite migration is repeatable and creates required indexes", async 
       teamColumns.rows.some(row => String(row.name) === "availability_days"),
       "Missing team_members.availability_days",
     );
+    assert.ok(teamColumns.rows.some(row => String(row.name) === "dsw_driver_name"), "Missing team_members.dsw_driver_name");
     const scheduleColumns = await client.execute("PRAGMA table_info(schedule_entries)");
     assert.ok(scheduleColumns.rows.some(row => String(row.name) === "notes"), "Missing schedule_entries.notes");
+    const userColumns = await client.execute("PRAGMA table_info(users)");
+    assert.ok(userColumns.rows.some(row => String(row.name) === "fedex_id"), "Missing users.fedex_id");
+    const mgbaRouteColumns = await client.execute("PRAGMA table_info(mgba_dsw_route_rows)");
+    assert.ok(mgbaRouteColumns.rows.some(row => String(row.name) === "next_avail_on_duty"), "Missing mgba_dsw_route_rows.next_avail_on_duty");
     const routeSettings = await client.execute("SELECT route_number, color FROM route_settings ORDER BY route_number");
     assert.equal(routeSettings.rows.length, 18, "Expected every KVC route to have a color setting");
     assert.ok(routeSettings.rows.every(row => /^#[0-9A-F]{6}$/i.test(String(row.color))), "Route colors must use hex values");

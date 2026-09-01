@@ -54,14 +54,14 @@ export function OverviewApp() {
     </section>
     <div className="overview-section-heading"><p className="eyebrow">FLEET</p></div>
     <section className="stats overview-fleet-stats" aria-label="Fleet summary">
-      <a className="stat-link" href="#open-issues"><article><span className="stat-icon amber">!</span><div><small>OPEN VEHICLE ISSUES</small><strong>{data.openIssues.length}</strong><p>Items needing attention</p></div></article></a>
+      <a className="stat-link" href="/vehicles/issues"><article><span className="stat-icon amber">!</span><div><small>OPEN VEHICLE ISSUES</small><strong>{data.openIssues.length}</strong><p>Items needing attention</p></div></article></a>
       <a className="stat-link" href="/"><article><span className="stat-icon green">▣</span><div><small>VEHICLES</small><strong>{data.vehicleCount}</strong><p>Trucks in the fleet</p></div></article></a>
       <a className="stat-link" href="/team"><article><span className="stat-icon blue">◎</span><div><small>TEAM MEMBERS</small><strong>{data.teamCount}</strong><p>People on the roster</p></div></article></a>
     </section>
     <section className="fleet-card" id="open-issues">
       <div className="fleet-head"><div><h2>Open issue tickets</h2><p>Search and jump directly to the vehicle that needs attention.</p></div><label className="search">⌕ <input value={search} onChange={event => setSearch(event.target.value)} aria-label="Search open issues" placeholder="Search truck, route, or issue" /></label></div>
       <div className="overview-issues">
-        {loading ? <div className="empty">Loading issues…</div> : visibleIssues.length === 0 ? <div className="empty">{data.openIssues.length ? "No issues match your search." : "There are no open issues."}</div> : visibleIssues.map(issue => <a className="overview-issue" href={`/vehicles/${issue.vehicleId}`} key={issue.id}>
+        {loading ? <div className="empty">Loading issues…</div> : visibleIssues.length === 0 ? <div className="empty">{data.openIssues.length ? "No issues match your search." : "There are no open issues."}</div> : visibleIssues.map(issue => <a className="overview-issue" href={`/vehicles/${encodeURIComponent(issue.vehicleNumber)}`} key={issue.id}>
           <span className="issue-type">{issue.type.charAt(0)}</span><div><div><strong>Vehicle #{issue.vehicleNumber}</strong>{issue.routeNumber && <span className="overview-route-badge" style={{ backgroundColor: colorFor(issue.routeNumber), color: routeTextColor(colorFor(issue.routeNumber)) }}>Route {issue.routeNumber}</span>}{issue.serviceScheduled && <span className="scheduled-badge">Service scheduled</span>}</div><p>{issue.notes}</p><small>{issue.type} · {new Date(issue.createdAt).toLocaleDateString()}</small></div><b>→</b>
         </a>)}
       </div>

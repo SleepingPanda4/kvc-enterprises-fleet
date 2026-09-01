@@ -23,6 +23,10 @@ import { mgbaDswRoutesAreIdentical } from "../services/integrations/mgba-dsw-ded
 import { normalizeMgbaDswRoute, normalizeMgbaRouteNumber } from "../services/integrations/mgba-dsw-normalization";
 import { MgbaCollectorError, requestMgbaCollection } from "../services/integrations/mgba-collector";
 import { compareMonitorRouteNumbers, DEFAULT_MONITOR_SORT, MONITOR_SORT_KEYS, compareNullable, nextMonitorSort } from "../app/monitor/sorting";
+import { monitorBackHref, statusPackagesHref, stopStatusPackageLinkPropagation } from "../app/monitor/status-packages/navigation";
+import { filterMonitorMobileRows, monitorDriverDisplayName, monitorExpectedProgress, monitorLoggedOutOverlayTime, monitorLoggedOutTime, monitorLogoutSortValue, monitorMobileCallHref, monitorMobilePaceColor, monitorStopProgress, monitorStopsLeft, sortMonitorMobileRows } from "../app/monitor/mobile";
+import { MAX_RESOLUTION_NOTES_LENGTH, normalizeResolutionNotes } from "../services/issue-resolution";
+import { MAX_ISSUE_ATTACHMENT_BYTES, validateIssueAttachmentFiles } from "../services/issue-attachment-validation";
 
 const projectRoot = new URL("../", import.meta.url);
 
@@ -70,6 +74,20 @@ test("DRO totals and capacity warnings use the actual vehicle capacity", () => {
   assert.equal(hasCapacityWarning(0, 0), false);
 });
 
+test("Issue resolution notes require meaningful text and retain safe trimmed content", () => {
+  assert.equal(normalizeResolutionNotes(undefined), null);
+  assert.equal(normalizeResolutionNotes("   \n  "), null);
+  assert.equal(normalizeResolutionNotes("  Replaced the worn tire.  "), "Replaced the worn tire.");
+  assert.equal(normalizeResolutionNotes("x".repeat(MAX_RESOLUTION_NOTES_LENGTH + 1)), null);
+});
+
+test("Issue attachment validation accepts supported media and rejects unsafe uploads", () => {
+  assert.equal(validateIssueAttachmentFiles([new File(["photo"], "repair.jpg", { type: "image/jpeg" })]), null);
+  assert.equal(validateIssueAttachmentFiles([new File(["video"], "walkaround.mp4", { type: "video/mp4" })]), null);
+  assert.match(validateIssueAttachmentFiles([new File(["text"], "not-media.txt", { type: "text/plain" })]) || "", /not a supported/);
+  assert.match(validateIssueAttachmentFiles([new File([new Uint8Array(MAX_ISSUE_ATTACHMENT_BYTES + 1)], "large.jpg", { type: "image/jpeg" })]) || "", /25 MB/);
+});
+
 test("MGBA DSW normalization, deduplication, sorting, and worker errors preserve source meaning", async () => {
   const source = { serviceArea: null, waName: "  UNKNOWN AREA ", vehicleNumber: "415659 431928", driverName: " Driver One ", routeNumber: "000621", rawRoute: "000621", dst: null,
     vscanPkgs: 0, delStops: 12, puStops: null, diff: 0, actDelStops: 10, actDelPkgs: 99, actPuStops: null, actPuPkgs: null, ilsPercent: 97.5, allStatusCodePkgs: 7 };
@@ -82,20 +100,133 @@ test("MGBA DSW normalization, deduplication, sorting, and worker errors preserve
   assert.equal(mgbaDswRoutesAreIdentical([normalized], [{ ...normalized, allStatusCodePkgs: 8 }]), false, "Status packages are an independent source field");
   assert.equal(mgbaDswRoutesAreIdentical([normalized, { ...normalized, driverName: "Driver Two" }], [{ ...normalized, driverName: "Driver Two" }, normalized]), true, "Row ordering does not affect deduplication");
   assert.equal(compareNullable(null, 0, "asc"), 1);
-  assert.deepEqual(DEFAULT_MONITOR_SORT, { key: "route", direction: "desc" });
+  assert.deepEqual(DEFAULT_MONITOR_SORT, { key: "route", direction: "asc" });
   assert.deepEqual(["614", "617", "618", "621", "622", "625", "626", "629", "630", "634", "637", "641", "1127"].sort((left, right) => compareMonitorRouteNumbers(left, right, "desc")), ["1127", "641", "637", "634", "630", "629", "626", "625", "622", "621", "618", "617", "614"], "Monitor route sorting is numeric descending by default");
   assert.deepEqual(["641", "1127"].sort((left, right) => compareMonitorRouteNumbers(left, right, "asc")), ["641", "1127"]);
-  assert.deepEqual(nextMonitorSort(DEFAULT_MONITOR_SORT, "route"), { key: "route", direction: "asc" });
-  assert.deepEqual(nextMonitorSort({ key: "route", direction: "asc" }, "route"), { key: "route", direction: "desc" });
+  assert.deepEqual(nextMonitorSort(DEFAULT_MONITOR_SORT, "route"), { key: "route", direction: "desc" });
+  assert.deepEqual(nextMonitorSort({ key: "route", direction: "desc" }, "route"), { key: "route", direction: "asc" });
   assert.deepEqual(["junk", null, "641", "1127"].sort((left, right) => compareMonitorRouteNumbers(left, right, "desc")), ["1127", "641", "junk", null]);
   assert.equal(nextMonitorSort(null, "vscan").direction, "desc");
   assert.equal(MONITOR_SORT_KEYS.includes("vscan"), true);
   assert.equal((MONITOR_SORT_KEYS as readonly string[]).includes("allStatusCodePkgs"), false, "All Status Code Pkgs is intentionally not sortable");
-  await assert.rejects(requestMgbaCollection("2026-08-29", { fetchImplementation: async () => Response.json({ error: "collection_in_progress" }, { status: 409 }) }), error => error instanceof MgbaCollectorError && error.code === "MGBA_COLLECTION_IN_PROGRESS");
-  await assert.rejects(requestMgbaCollection("2026-08-29", { fetchImplementation: async () => { throw new TypeError("offline"); } }), error => error instanceof MgbaCollectorError && error.code === "MGBA_WORKER_UNAVAILABLE");
+  await assert.rejects(requestMgbaCollection("2026-08-29", { token: "test-worker-token", fetchImplementation: async () => Response.json({ error: "collection_in_progress" }, { status: 409 }) }), error => error instanceof MgbaCollectorError && error.code === "MGBA_COLLECTION_IN_PROGRESS");
+  await assert.rejects(requestMgbaCollection("2026-08-29", { token: "test-worker-token", fetchImplementation: async () => { throw new TypeError("offline"); } }), error => error instanceof MgbaCollectorError && error.code === "MGBA_WORKER_UNAVAILABLE");
   let workerUrl = "";
-  await requestMgbaCollection("2026-08-29", { fetchImplementation: async input => { workerUrl = String(input); return Response.json({ ok: true, operationalDate: "2026-08-29" }); } });
+  await requestMgbaCollection("2026-08-29", { token: "test-worker-token", fetchImplementation: async (input, init) => { workerUrl = String(input); assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test-worker-token"); return Response.json({ ok: true, operationalDate: "2026-08-29" }); } });
   assert.match(workerUrl, /date=08%2F29%2F2026$/);
+});
+
+test("Monitor status-package links retain the exact persisted row and Monitor context", () => {
+  assert.equal(statusPackagesHref(123, "2026-08-29", 7), "/monitor/status-packages/123?date=2026-08-29&snapshot=7");
+  assert.equal(statusPackagesHref(456, "2026-08-29", 7), "/monitor/status-packages/456?date=2026-08-29&snapshot=7", "Duplicate route numbers still use distinct route-row IDs");
+  assert.equal(statusPackagesHref(123, "2026-08-29", null), "/monitor/status-packages/123?date=2026-08-29");
+  assert.equal(monitorBackHref(new URLSearchParams("date=2026-08-29&snapshot=7")), "/monitor?date=2026-08-29&snapshot=7");
+  assert.equal(monitorBackHref(new URLSearchParams()), "/monitor");
+
+  let propagationStopped = false;
+  let defaultPrevented = false;
+  const linkClick = {
+    stopPropagation: () => { propagationStopped = true; },
+    preventDefault: () => { defaultPrevented = true; },
+  };
+  stopStatusPackageLinkPropagation(linkClick);
+  assert.equal(propagationStopped, true, "Package link clicks do not reach the row-selection handler");
+  assert.equal(defaultPrevented, false, "Package link clicks retain native anchor navigation");
+});
+
+test("Monitor mobile cards use stop-only completion progress without manufacturing missing data", () => {
+  assert.equal(monitorStopProgress(100, 20, 60, 10), 58);
+  assert.equal(monitorStopProgress(126, null, 57, null), 45);
+  assert.equal(monitorStopProgress(112, null, 50, null), 45);
+  assert.equal(monitorStopProgress(144, null, 56, null), 39);
+  assert.equal(monitorStopProgress(119, 5, 116, 5), 98);
+  assert.equal(monitorStopProgress(100, 10, 105, 10), 100);
+  assert.equal(monitorStopProgress(100, 20, 100, 20), 100);
+  assert.equal(monitorStopProgress(100, 20, 0, 0), 0);
+  assert.equal(monitorStopProgress(null, null, 116, 4), null, "A multi-driver child without planned stops remains unavailable");
+  assert.equal(monitorStopsLeft(144, null, 61, null), 83);
+  assert.equal(monitorStopsLeft(128, 2, 107, null), 23);
+  assert.equal(monitorStopsLeft(119, 5, 116, 5), 3);
+  assert.equal(monitorStopsLeft(100, 10, 105, 10), 0, "Stops Left never becomes negative");
+  assert.equal(monitorStopsLeft(null, null, 116, 4), null, "A multi-driver child without planned stops has no Stops Left value");
+  assert.equal(monitorDriverDisplayName("GALLAGHER,JOSHUA"), "Joshua Gallagher");
+  assert.equal(monitorDriverDisplayName("Trapp,Phillip Michael"), "Phillip Michael Trapp");
+  assert.equal(monitorDriverDisplayName("Unparseable"), "Unparseable");
+});
+
+test("Monitor mobile quick search filters the current mobile order without mutating it", () => {
+  const source = [
+    { id: 1, driverName: "GALLAGHER,WILLIAM", routeNumber: "621", registeredRouteNumber: null, vehicleNumber: "439198", delStops: 100, puStops: null, actDelStops: 48, actPuStops: null, driverOrder: 0 },
+    { id: 2, driverName: "TRAPP,PHILLIP", routeNumber: "614", registeredRouteNumber: null, vehicleNumber: "439201", delStops: 100, puStops: null, actDelStops: 42, actPuStops: null, driverOrder: 0 },
+    { id: 3, driverName: "UNAVAILABLE DRIVER", routeNumber: "625", registeredRouteNumber: null, vehicleNumber: "510252", delStops: null, puStops: null, actDelStops: 3, actPuStops: null, driverOrder: 0 },
+  ];
+  const ordered = sortMonitorMobileRows(source);
+  assert.deepEqual(ordered.map(row => row.id), [2, 1, 3]);
+  assert.deepEqual(filterMonitorMobileRows(ordered, "439").map(row => row.id), [2, 1], "Search preserves the completion-sorted order among matches");
+  assert.deepEqual(filterMonitorMobileRows(ordered, "gallagher").map(row => row.id), [1]);
+  assert.deepEqual(filterMonitorMobileRows(ordered, "62").map(row => row.id), [1, 3]);
+  assert.deepEqual(filterMonitorMobileRows(ordered, "").map(row => row.id), [2, 1, 3]);
+  assert.deepEqual(source.map(row => row.id), [1, 2, 3], "Search and sorting leave source rows intact");
+});
+
+test("Monitor mobile ordering keeps active drivers first and orders logged-out rows by real logout chronology", () => {
+  const rows = [
+    { id: 1, driverName: "Active Later", routeNumber: "625", registeredRouteNumber: null, vehicleNumber: null, nextAvailOnDuty: null, delStops: 100, puStops: null, actDelStops: 50, actPuStops: null, driverOrder: 0 },
+    { id: 2, driverName: "Logged Out Previous Afternoon", routeNumber: "634", registeredRouteNumber: null, vehicleNumber: null, nextAvailOnDuty: "01:15", delStops: 100, puStops: null, actDelStops: 1, actPuStops: null, driverOrder: 0 },
+    { id: 3, driverName: "Active Early", routeNumber: "621", registeredRouteNumber: null, vehicleNumber: null, nextAvailOnDuty: null, delStops: 100, puStops: null, actDelStops: 20, actPuStops: null, driverOrder: 0 },
+    { id: 4, driverName: "Logged Out Same Day", routeNumber: "630", registeredRouteNumber: null, vehicleNumber: null, nextAvailOnDuty: "23:15", delStops: 100, puStops: null, actDelStops: 99, actPuStops: null, driverOrder: 0 },
+    { id: 5, driverName: "Invalid Signal Is Active", routeNumber: "622", registeredRouteNumber: null, vehicleNumber: null, nextAvailOnDuty: "not a time", delStops: 100, puStops: null, actDelStops: 30, actPuStops: null, driverOrder: 0 },
+    { id: 6, driverName: "Logged Out Previous Evening", routeNumber: "637", registeredRouteNumber: null, vehicleNumber: null, nextAvailOnDuty: "05:15", delStops: 100, puStops: null, actDelStops: 2, actPuStops: null, driverOrder: 0 },
+    { id: 7, driverName: "Logged Tie B", routeNumber: "621", registeredRouteNumber: null, vehicleNumber: null, nextAvailOnDuty: "23:15", delStops: 100, puStops: null, actDelStops: 3, actPuStops: null, driverOrder: 2 },
+    { id: 8, driverName: "Logged Tie A", routeNumber: "614", registeredRouteNumber: null, vehicleNumber: null, nextAvailOnDuty: "23:15", delStops: 100, puStops: null, actDelStops: 4, actPuStops: null, driverOrder: 1 },
+    { id: 9, driverName: "Child Without Signal", routeNumber: "621", registeredRouteNumber: null, vehicleNumber: null, nextAvailOnDuty: null, delStops: null, puStops: null, actDelStops: 50, actPuStops: null, driverOrder: 3 },
+  ];
+  assert.equal(monitorLogoutSortValue("01:15"), -525, "1:15 AM next availability means a prior-day 3:15 PM logout");
+  assert.equal(monitorLogoutSortValue("23:15"), 795, "11:15 PM next availability means a same-day 1:15 PM logout");
+  const ordered = sortMonitorMobileRows(rows);
+  assert.deepEqual(ordered.map(row => row.id), [3, 5, 1, 9, 8, 7, 4, 6, 2]);
+  assert.deepEqual(filterMonitorMobileRows(ordered, "logged").map(row => row.id), [8, 7, 4, 6, 2], "Search retains active/logged-out ordering among matching rows");
+  assert.equal(ordered.at(-1)?.id, 2, "The earliest logged-out driver stays at the bottom");
+  assert.equal(ordered.find(row => row.id === 9)?.nextAvailOnDuty, null, "A multi-driver child without its own value remains active");
+});
+
+test("Monitor mobile pace color uses the persisted snapshot time in America/Chicago", () => {
+  const beforeWorkday = "2026-08-30T13:30:00.000Z"; // 8:30 AM CDT
+  const tenThirty = "2026-08-30T15:30:00.000Z"; // 10:30 AM CDT
+  const afterWorkday = "2026-08-30T23:00:00.000Z"; // 6:00 PM CDT
+
+  assert.equal(monitorExpectedProgress(beforeWorkday), null, "Snapshots before 9 AM do not receive a pace target");
+  assert.equal(monitorExpectedProgress(tenThirty), 18.75, "Chicago clock time determines expected completion");
+  assert.equal(monitorExpectedProgress(afterWorkday), 100, "Expected completion remains capped after 5 PM");
+  assert.equal(monitorMobilePaceColor(50, beforeWorkday), null, "Pre-workday snapshots retain the neutral bar color");
+  assert.equal(monitorMobilePaceColor(null, tenThirty), null, "Unavailable progress does not manufacture a pace color");
+  assert.equal(monitorMobilePaceColor(100, beforeWorkday), "#087a46", "Completion always overrides pace with green");
+  assert.equal(monitorMobilePaceColor(19, tenThirty), "#2c7ec4", "A historical snapshot close to pace is blue");
+  assert.equal(monitorMobilePaceColor(0, afterWorkday), "#c7353c", "Routes ninety minutes or more behind are red");
+  assert.notEqual(monitorMobilePaceColor(5, tenThirty), monitorMobilePaceColor(10, tenThirty), "Intermediate pace values use smooth color interpolation");
+});
+
+test("Monitor logged-out overlay derives only valid persisted Next Avail On Duty source times", () => {
+  assert.equal(monitorLoggedOutTime("03:30 AM"), "5:30 PM");
+  assert.equal(monitorLoggedOutTime("08/30/2026 03:30:00 AM"), "5:30 PM", "Date-bearing source text preserves its clock meaning");
+  assert.equal(monitorLoggedOutTime("23:15"), "1:15 PM", "24-hour source clocks wrap across midnight safely");
+  assert.equal(monitorLoggedOutTime(null), null);
+  assert.equal(monitorLoggedOutTime("not available"), null);
+  assert.equal(monitorStopProgress(100, null, 99, null), 99);
+  assert.equal(monitorLoggedOutOverlayTime("03:30 AM"), "5:30 PM", "A valid source value shows the overlay even below 100% completion");
+  assert.equal(monitorStopProgress(100, null, 100, null), 100);
+  assert.equal(monitorLoggedOutOverlayTime("03:30 AM"), "5:30 PM", "A valid source value also shows the overlay at 100% completion");
+  assert.equal(monitorLoggedOutOverlayTime(null), null, "Completion at 100% without a source value does not show the overlay");
+  assert.equal(monitorLoggedOutOverlayTime("not available"), null, "Invalid source values do not show the overlay");
+  assert.equal(monitorLoggedOutOverlayTime("08/29/2026 03:30 AM"), "5:30 PM", "Historical snapshot source values remain eligible for the mobile overlay");
+});
+
+test("Monitor mobile call links are Chicago-today only and retain native phone dialing", () => {
+  const chicagoToday = new Date("2026-08-30T05:30:00.000Z"); // 12:30 AM CDT
+  assert.equal(monitorMobileCallHref("2026-08-30", "(314) 555-0101", chicagoToday), "tel:3145550101");
+  assert.equal(monitorMobileCallHref("2026-08-29", "(314) 555-0101", chicagoToday), null, "Historical operational dates never show a phone action");
+  assert.equal(monitorMobileCallHref("2026-08-30", null, chicagoToday), null, "Missing Team phone numbers do not create dead phone actions");
+  assert.equal(monitorMobileCallHref("2026-08-30", "not a phone", chicagoToday), null, "Only usable Team phone values become tel links");
 });
 
 test("DRO overview links and URL sorting preserve the requested ordering", () => {
@@ -343,6 +474,7 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
   const databasePath = path.join(temporaryDirectory, "fleet.db");
   const databaseUrl = `file:${databasePath.replaceAll("\\", "/")}`;
   process.env.DATABASE_URL = databaseUrl;
+  process.env.ISSUE_UPLOAD_ROOT = path.join(temporaryDirectory, "uploads", "issues");
   let integrationClient: ReturnType<typeof createClient> | null = null;
 
   try {
@@ -362,6 +494,150 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
 
     const client = createClient({ url: databaseUrl });
     integrationClient = client;
+    const issueColumns = await client.execute("PRAGMA table_info(issues)");
+    assert.equal(issueColumns.rows.some(row => String(row.name) === "resolution_notes"), true, "Resolution notes migration is additive");
+    await client.execute({ sql: "INSERT INTO vehicles (number, make_model) VALUES (?, ?)", args: ["RES-100", "Ford Transit"] });
+    const resolutionVehicle = await client.execute("SELECT id FROM vehicles WHERE number = 'RES-100'");
+    const resolutionVehicleId = Number(resolutionVehicle.rows[0].id);
+    await client.execute({ sql: "INSERT INTO issues (vehicle_id, type, notes, status, resolved_at) VALUES (?, ?, ?, 'open', ?)", args: [resolutionVehicleId, "Maintenance", "Replace worn tire", "client-controlled-value"] });
+    await client.execute({ sql: "INSERT INTO issues (vehicle_id, type, notes, status, resolved_at) VALUES (?, ?, ?, 'resolved', ?)", args: [resolutionVehicleId, "Note", "Legacy resolved issue", "2026-08-29T12:00:00.000Z"] });
+    const resolutionIssue = await client.execute("SELECT id FROM issues WHERE notes = 'Replace worn tire'");
+    const legacyResolutionIssue = await client.execute("SELECT id FROM issues WHERE notes = 'Legacy resolved issue'");
+    await client.execute({ sql: "INSERT INTO users (name, email, phone_number, password_hash, role) VALUES (?, ?, ?, ?, 'Fleet Manager')", args: ["Resolution Manager", "resolution-manager@example.test", "5555550199", "test"] });
+    const resolutionUser = await client.execute("SELECT id FROM users WHERE email = 'resolution-manager@example.test'");
+    const { displayName, hashPassword, hashToken: hashResolutionToken, normalizeFedexId, requireFleetOwner, requireManager, verifyPassword } = await import("../app/auth/server");
+    assert.equal(normalizeFedexId(" 0012345 "), "0012345"); assert.equal(normalizeFedexId("12-345"), null);
+    const sessionToken = "resolution-manager-test-token";
+    await client.execute({ sql: "INSERT INTO auth_sessions (token_hash, user_id) VALUES (?, ?)", args: [hashResolutionToken(sessionToken), Number(resolutionUser.rows[0].id)] });
+    const accountPassword = "OriginalPassword9";
+    await client.execute({ sql: "INSERT INTO users (name, email, phone_number, password_hash, role) VALUES (?, ?, ?, ?, 'Team Member')", args: ["Account User", "account-user@example.test", "(555) 555-0123", hashPassword(accountPassword)] });
+    const accountUser = await client.execute("SELECT id FROM users WHERE email = 'account-user@example.test'");
+    const accountSessionToken = "account-settings-test-token";
+    await client.execute({ sql: "INSERT INTO auth_sessions (token_hash, user_id) VALUES (?, ?)", args: [hashResolutionToken(accountSessionToken), Number(accountUser.rows[0].id)] });
+    const { GET: getAccount, PATCH: updateAccount, POST: changeAccountPassword } = await import("../app/api/account/route");
+    const accountRequest = (method = "GET", body?: unknown) => new Request("http://localhost/api/account", { method, headers: { Cookie: `kvc_session=${accountSessionToken}`, ...(body ? { "Content-Type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    assert.equal((await getAccount(new Request("http://localhost/api/account"))).status, 401, "Account settings require authentication");
+    const accountUpdate = await updateAccount(accountRequest("PATCH", { name: "Account User Updated", nickname: "Preferred", fedexId: "0012345", email: "account-user@example.test", phoneNumber: "5555550123", role: "FLEET_OWNER", userId: Number(resolutionUser.rows[0].id) }));
+    assert.equal(accountUpdate.status, 200);
+    const accountBody = await accountUpdate.json() as { account: { displayName: string; role: string } };
+    assert.equal(accountBody.account.displayName, "Preferred", "Display name prefers nickname");
+    assert.equal(accountBody.account.role, "Team Member", "Account update cannot modify role");
+    assert.equal(JSON.stringify(accountBody).includes("password"), false, "Account API never returns password data");
+    const accountRow = await client.execute("SELECT name, nickname, fedex_id, role, password_hash FROM users WHERE email = 'account-user@example.test'");
+    assert.equal(accountRow.rows[0].name, "Account User Updated"); assert.equal(accountRow.rows[0].nickname, "Preferred"); assert.equal(accountRow.rows[0].fedex_id, "0012345", "FedEx ID preserves leading zeroes"); assert.equal(accountRow.rows[0].role, "Team Member");
+    assert.equal((await updateAccount(accountRequest("PATCH", { name: "Account User Updated", nickname: "Preferred", fedexId: "12-345", email: "account-user@example.test", phoneNumber: "5555550123" }))).status, 400, "Non-digit FedEx IDs are rejected server-side");
+    await client.execute({ sql: "INSERT INTO users (name, email, phone_number, fedex_id, password_hash, role) VALUES (?, ?, ?, ?, ?, 'Team Member')", args: ["Duplicate FedEx", "duplicate-fedex@example.test", "5555550198", "9988", hashPassword("Password123")] });
+    assert.equal((await updateAccount(accountRequest("PATCH", { name: "Account User Updated", nickname: "Preferred", fedexId: "9988", email: "account-user@example.test", phoneNumber: "5555550123" }))).status, 409, "Duplicate FedEx IDs are rejected server-side");
+    const loginPassword = "LoginPassword9";
+    await client.execute({ sql: "INSERT INTO users (name, email, phone_number, fedex_id, password_hash, role, verified_at) VALUES (?, ?, ?, ?, ?, 'Team Member', ?)", args: ["Login User", "login-fedex@example.test", "(555) 555-0144", "0004422", hashPassword(loginPassword), new Date().toISOString()] });
+    const { POST: authPost } = await import("../app/api/auth/route");
+    const login = (identifier: string, password = loginPassword) => authPost(new Request("http://localhost/api/auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "login", identifier, password }) }));
+    assert.equal((await login("login-fedex@example.test")).status, 200, "Email login remains supported");
+    assert.equal((await login("5555550144")).status, 200, "Phone login remains supported");
+    assert.equal((await login("0004422")).status, 200, "FedEx ID login is supported");
+    assert.equal((await login("0004422", "wrong-password")).status, 401, "Wrong passwords still fail");
+    const unknownFedex = await login("0009999");
+    assert.equal(unknownFedex.status, 401, "Unknown FedEx IDs fail generically");
+    assert.equal((await unknownFedex.json() as { code: string }).code, "AUTH_INVALID_CREDENTIALS");
+    const untouchedOtherUser = await client.execute("SELECT name FROM users WHERE email = 'resolution-manager@example.test'");
+    assert.equal(untouchedOtherUser.rows[0].name, "Resolution Manager", "Client-supplied account targets are ignored");
+    assert.equal((await changeAccountPassword(accountRequest("POST", { currentPassword: "wrong", newPassword: "UpdatedPassword9" }))).status, 400, "Current password is verified server-side");
+    const malformedPasswordChange = await changeAccountPassword(new Request("http://localhost/api/account", { method: "POST", headers: { Cookie: `kvc_session=${accountSessionToken}`, "Content-Type": "application/json" }, body: "{" }));
+    assert.equal(malformedPasswordChange.status, 400, "Malformed password requests are rejected");
+    const passwordBeforeSuccess = await client.execute("SELECT password_hash FROM users WHERE email = 'account-user@example.test'");
+    assert.equal(passwordBeforeSuccess.rows[0].password_hash, accountRow.rows[0].password_hash, "Failed password requests do not modify the hash");
+    const passwordSuccess = await changeAccountPassword(accountRequest("POST", { currentPassword: accountPassword, newPassword: "UpdatedPassword9" }));
+    assert.equal(passwordSuccess.status, 200);
+    const passwordSuccessBody = await passwordSuccess.json() as { passwordChanged?: boolean; password?: string; passwordHash?: string };
+    assert.equal(passwordSuccessBody.passwordChanged, true, "Password API has an explicit success contract");
+    assert.equal(passwordSuccessBody.password, undefined); assert.equal(passwordSuccessBody.passwordHash, undefined);
+    const updatedPasswordRow = await client.execute("SELECT password_hash FROM users WHERE email = 'account-user@example.test'");
+    assert.notEqual(updatedPasswordRow.rows[0].password_hash, accountRow.rows[0].password_hash); assert.equal(verifyPassword("UpdatedPassword9", String(updatedPasswordRow.rows[0].password_hash)), true, "New password uses the existing secure hash format");
+    await client.execute({ sql: "UPDATE users SET verified_at = ? WHERE email = 'account-user@example.test'", args: [new Date().toISOString()] });
+    const loginAccount = (password: string) => authPost(new Request("http://localhost/api/auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "login", identifier: "account-user@example.test", password }) }));
+    assert.equal((await loginAccount("UpdatedPassword9")).status, 200, "New password authenticates after a successful change");
+    assert.equal((await loginAccount(accountPassword)).status, 401, "Old password no longer authenticates");
+    assert.equal(displayName({ nickname: "Preferred", name: "Full Name", email: "login@example.test" }), "Preferred");
+    assert.equal(displayName({ nickname: " ", name: "Full Name", email: "login@example.test" }), "Full Name");
+    assert.equal(displayName({ nickname: "", name: "", email: "login@example.test" }), "login@example.test");
+    assert.ok(await requireFleetOwner(accountRequest()) instanceof Response, "Non-owner cannot use the future owner-only authorization path");
+    await client.execute("UPDATE users SET role = 'FLEET_OWNER' WHERE email = 'account-user@example.test'");
+    assert.equal(await requireFleetOwner(accountRequest()) instanceof Response, false, "Fleet Owner passes owner authorization");
+    assert.equal(await requireManager(accountRequest()) instanceof Response, false, "Fleet Owner retains Fleet Manager permissions");
+    const credentialKey = Buffer.alloc(32, 7).toString("base64");
+    process.env.KVC_CREDENTIAL_MASTER_KEY = credentialKey;
+    const { decryptIntegrationPassword, encryptIntegrationPassword } = await import("../services/integration-credential-crypto");
+    const firstEncrypted = encryptIntegrationPassword("integration-secret", credentialKey), secondEncrypted = encryptIntegrationPassword("integration-secret", credentialKey);
+    assert.equal(decryptIntegrationPassword(firstEncrypted, credentialKey), "integration-secret", "Credentials decrypt only server-side with the master key");
+    assert.notEqual(firstEncrypted.ciphertext, secondEncrypted.ciphertext, "Each credential encryption uses a fresh nonce");
+    assert.notEqual(firstEncrypted.iv, secondEncrypted.iv, "Each credential encryption uses a fresh IV");
+    assert.throws(() => decryptIntegrationPassword(firstEncrypted, Buffer.alloc(32, 8).toString("base64")), /could not be decrypted/);
+    assert.throws(() => decryptIntegrationPassword({ ...firstEncrypted, ciphertext: "malformed" }, credentialKey), /could not be decrypted/);
+    const { GET: getIntegrations, PATCH: updateIntegration } = await import("../app/api/settings/integrations/route");
+    const integrationRequest = (method = "GET", body?: unknown, token = accountSessionToken) => new Request("http://localhost/api/settings/integrations", { method, headers: { Cookie: `kvc_session=${token}`, ...(body ? { "Content-Type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    assert.equal((await getIntegrations(new Request("http://localhost/api/settings/integrations"))).status, 401, "Unauthenticated users cannot read integrations");
+    assert.equal((await getIntegrations(integrationRequest("GET", undefined, sessionToken))).status, 403, "Fleet Managers cannot read owner-only integrations");
+    const initialIntegrationResponse = await getIntegrations(integrationRequest()); const initialIntegrationBody = await initialIntegrationResponse.json() as { integrations: unknown[] };
+    assert.equal(JSON.stringify(initialIntegrationBody).includes("password_ciphertext"), false, "GET never returns credential storage fields");
+    assert.equal(JSON.stringify(initialIntegrationBody).includes("password"), true, "GET exposes only passwordConfigured metadata");
+    const saveMgba = await updateIntegration(integrationRequest("PATCH", { integration: "MGBA", username: "mgba-user", password: "MGBA secret", currentPassword: "UpdatedPassword9", role: "FLEET_OWNER" }));
+    assert.equal(saveMgba.status, 200); const saveMgbaBody = await saveMgba.json(); assert.equal(JSON.stringify(saveMgbaBody).includes("MGBA secret"), false, "Credential update response never returns plaintext");
+    const storedMgba = await client.execute("SELECT username, password_ciphertext, password_iv, password_tag FROM integration_credentials WHERE integration = 'MGBA'");
+    assert.equal(storedMgba.rows[0].username, "mgba-user"); assert.notEqual(storedMgba.rows[0].password_ciphertext, "MGBA secret", "Plaintext is never stored");
+    assert.equal((await client.execute("SELECT COUNT(*) AS count FROM integration_credentials WHERE integration = 'HOMEBASE'")).rows[0].count, 0, "MGBA updates do not modify Homebase");
+    const originalCiphertext = String(storedMgba.rows[0].password_ciphertext);
+    assert.equal((await updateIntegration(integrationRequest("PATCH", { integration: "MGBA", username: "mgba-user-renamed", password: "", currentPassword: "UpdatedPassword9" }))).status, 200, "Blank password preserves the configured secret");
+    const renamedMgba = await client.execute("SELECT username, password_ciphertext FROM integration_credentials WHERE integration = 'MGBA'");
+    assert.equal(renamedMgba.rows[0].username, "mgba-user-renamed"); assert.equal(renamedMgba.rows[0].password_ciphertext, originalCiphertext);
+    assert.equal((await updateIntegration(integrationRequest("PATCH", { integration: "HOMEBASE", username: "homebase-user", password: "Homebase secret", currentPassword: "wrong" }))).status, 400, "Owner current password is required for credential writes");
+    assert.equal((await updateIntegration(integrationRequest("PATCH", { integration: "HOMEBASE", username: "homebase-user", password: "Homebase secret", currentPassword: "UpdatedPassword9" }))).status, 200);
+    const auditRows = await client.execute("SELECT integration, action, user_id FROM integration_credential_audit ORDER BY id");
+    assert.equal(auditRows.rows.length, 3, "Sensitive updates create metadata-only audit records");
+    const { PATCH: updateIssue } = await import("../app/api/issues/[id]/route");
+    const issueRequest = (body: unknown) => new Request("http://localhost/api/issues/1", { method: "PATCH", headers: { "Content-Type": "application/json", cookie: `kvc_session=${sessionToken}` }, body: JSON.stringify(body) });
+    assert.equal((await updateIssue(issueRequest({ status: "resolved" }), { params: Promise.resolve({ id: String(resolutionIssue.rows[0].id) }) })).status, 400, "An open issue cannot resolve without notes");
+    const resolvedResponse = await updateIssue(issueRequest({ status: "resolved", resolutionNotes: "  Installed a new tire.  ", resolvedAt: "tampered" }), { params: Promise.resolve({ id: String(resolutionIssue.rows[0].id) }) });
+    assert.equal(resolvedResponse.status, 200);
+    const resolvedIssue = await resolvedResponse.json() as { issue: { status: string; resolutionNotes: string | null; resolvedAt: string | null } };
+    assert.equal(resolvedIssue.issue.status, "resolved");
+    assert.equal(resolvedIssue.issue.resolutionNotes, "Installed a new tire.");
+    assert.notEqual(resolvedIssue.issue.resolvedAt, "tampered", "The server alone controls resolvedAt");
+    const originalResolvedAt = resolvedIssue.issue.resolvedAt;
+    const editResponse = await updateIssue(issueRequest({ resolutionNotes: "Added wheel torque check." }), { params: Promise.resolve({ id: String(resolutionIssue.rows[0].id) }) });
+    const editedIssue = await editResponse.json() as { issue: { resolutionNotes: string | null; resolvedAt: string | null } };
+    assert.equal(editedIssue.issue.resolutionNotes, "Added wheel torque check.");
+    assert.equal(editedIssue.issue.resolvedAt, originalResolvedAt, "Editing notes does not replace the resolution timestamp");
+    const legacyEditResponse = await updateIssue(issueRequest({ resolutionNotes: "Legacy repair details added later." }), { params: Promise.resolve({ id: String(legacyResolutionIssue.rows[0].id) }) });
+    assert.equal(legacyEditResponse.status, 200, "Legacy resolved issues may gain resolution notes later");
+    const { listIssueAttachments, readIssueAttachment, saveIssueAttachments } = await import("../services/issue-attachments");
+    const savedAttachments = await saveIssueAttachments(Number(resolutionIssue.rows[0].id), [new File(["image bytes"], "../../tire-photo.jpg", { type: "image/jpeg" }), new File(["video bytes"], "walkaround.mp4", { type: "video/mp4" })], "update");
+    assert.equal(savedAttachments.length, 2, "Multiple attachment metadata rows are persisted separately from the issue");
+    assert.equal(savedAttachments[0].originalFilename, "tire-photo.jpg", "Unsafe client path segments are removed from metadata");
+    assert.notEqual(savedAttachments[0].publicId, savedAttachments[1].publicId, "Attachments receive unique opaque public IDs");
+    assert.equal((await listIssueAttachments(Number(resolutionIssue.rows[0].id))).length, 2);
+    assert.equal((await readIssueAttachment(savedAttachments[0].publicId))?.content.toString(), "image bytes", "Only registered public IDs resolve to their stored binary");
+    assert.equal(await readIssueAttachment(String(savedAttachments[0].id)), null, "Sequential attachment IDs are not public endpoints");
+    const attachmentColumns = await client.execute("PRAGMA table_info(issue_attachments)");
+    assert.equal(attachmentColumns.rows.some(row => String(row.name).includes("content") || String(row.name).includes("binary")), false, "SQLite stores metadata only, never attachment binary content");
+    await client.execute({ sql: "INSERT INTO issues (vehicle_id, type, notes, status, created_at, resolved_at, resolution_notes, service_scheduled) VALUES (?, ?, ?, 'resolved', ?, ?, ?, 1)", args: [resolutionVehicleId, "=Formula-like type", "Line one, with a comma\nand a \"quote\"", "2026-08-20T15:42:00.000Z", "2026-08-21T16:17:00.000Z", "+Resolution detail"] });
+    const { createCsvExport, createXlsxExport, getIssueExportRows } = await import("../services/issue-export");
+    const exportedRows = await getIssueExportRows("all");
+    const specialExport = exportedRows.find(row => row["Issue Type"] === "'=Formula-like type");
+    assert.equal(specialExport?.["Service Scheduled"], "Yes");
+    assert.equal(specialExport?.["Resolution Information"], "'+Resolution detail", "Formula-like values are neutralized in export data");
+    assert.equal(specialExport?.["Reported Date"], "08/20/2026", "Export dates use America/Chicago formatting");
+    const issueIdsInOrder = exportedRows.filter(row => [Number(resolutionIssue.rows[0].id), Number(legacyResolutionIssue.rows[0].id)].includes(Number(row["Issue ID"]))).map(row => Number(row["Issue ID"]));
+    assert.deepEqual(issueIdsInOrder, [...issueIdsInOrder].sort((left, right) => left - right), "Equal creation timestamps use deterministic issue ID ordering");
+    const csv = createCsvExport([specialExport!]);
+    assert.match(csv, /"Line one, with a comma\n?and a ""quote"""/, "CSV escapes commas, quotes, and multiline descriptions");
+    const workbook = createXlsxExport([specialExport!], "all");
+    assert.equal(workbook.subarray(0, 2).toString(), "PK", "XLSX is a real ZIP/OpenXML workbook");
+    assert.match(workbook.toString("utf8"), /Issue History/, "Workbook includes the Issue History worksheet");
+    assert.match(workbook.toString("utf8"), /cellStyle name="Normal" xfId="0" builtinId="0"/, "XLSX includes Excel's required default Normal style");
+    const { GET: exportIssues } = await import("../app/api/issues/export/route");
+    const exportResponse = await exportIssues(new Request("http://localhost/api/issues/export?scope=resolved&format=csv", { headers: { cookie: `kvc_session=${sessionToken}` } }));
+    assert.equal(exportResponse.status, 200); assert.match(exportResponse.headers.get("content-type") || "", /text\/csv/); assert.match(exportResponse.headers.get("content-disposition") || "", /kvc-vehicle-issues-resolved/);
+    assert.equal((await exportIssues(new Request("http://localhost/api/issues/export?scope=bad&format=csv", { headers: { cookie: `kvc_session=${sessionToken}` } }))).status, 400);
     const mgbaPayload = {
       operationalDate: "2026-08-29", dswDate: "08/29/2026", capturedAt: "2026-08-29T16:00:00.000Z", source: "MGBA_DSW", routeCount: 2,
       routes: [
@@ -393,6 +669,13 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     assert.equal(route621.find(row => row.driverName === "Driver B")?.delStops, 22);
     assert.equal((await getMgbaDswStatusPackagesForRouteRow(route621.find(row => row.driverName === "Driver A")!.id))?.packages[0]?.trackingId, "A");
     assert.equal((await getMgbaDswStatusPackagesForRouteRow(route621.find(row => row.driverName === "Driver B")!.id))?.packages[0]?.isGreyedOut, true);
+    await client.execute({ sql: "INSERT INTO team_members (name, phone_number, availability_days, dsw_driver_name) VALUES (?, ?, '[]', ?)", args: ["Roster Driver A", "(314) 555-0101", "Driver A"] });
+    await client.execute({ sql: "INSERT INTO team_members (name, phone_number, availability_days) VALUES (?, ?, '[]')", args: ["Driver B", "(314) 555-0102"] });
+    const todayPhoneRows = (await getMgbaDswSnapshotById(multiDriver.id, undefined, new Date("2026-08-30T18:00:00.000Z")))?.rows || [];
+    assert.equal(todayPhoneRows.find(row => row.driverName === "Driver A")?.driverPhone, "3145550101", "Today's Monitor data uses only the exact DSW driver association");
+    assert.equal(todayPhoneRows.find(row => row.driverName === "Driver B")?.driverPhone, null, "A matching Team display name without an explicit DSW association is never used");
+    const historicalPhoneRows = (await getMgbaDswSnapshotById(multiDriver.id, undefined, new Date("2026-08-31T18:00:00.000Z")))?.rows || [];
+    assert.equal(historicalPhoneRows.find(row => row.driverName === "Driver A")?.driverPhone, null, "Historical Monitor snapshots do not expose current Team phone numbers");
     assert.notEqual((await createMgbaDswSnapshot({ ...multiDriver, capturedAt: "2026-08-30T16:10:00.000Z", routes: multiDriver.routeCount ? [
       { ...mgbaPayload.routes[0], driverName: "Driver A", allStatusCodePkgs: 1 }, { ...mgbaPayload.routes[1], driverName: "Driver C", routeNumber: "625" },
     ] : [] })).id, multiDriver.id, "Removing one duplicate route driver is a snapshot change");
@@ -407,13 +690,25 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     assert.equal(chicagoHourKey("2026-08-29T03:50:00.000Z"), "2026-08-28T22", "UTC day boundaries are converted to Chicago before bucketing");
     assert.equal(chicagoHourKey("2026-08-29T04:30:00.000Z"), "2026-08-28T23");
     assert.deepEqual((await getMgbaDswSnapshotsForDate("2026-08-28", undefined, new Date("2026-08-30T18:00:00.000Z"))).map(snapshot => snapshot.id), [utcBoundaryLatest.id, utcBoundaryFirst.id], "Historical hour buckets preserve newest-to-oldest order");
+    const noLogoutSignal = await createMgbaDswSnapshot({ ...mgbaPayload, operationalDate: "2026-08-27", dswDate: "08/27/2026", capturedAt: "2026-08-27T16:00:00.000Z" });
+    const logoutSignal = await createMgbaDswSnapshot({ ...mgbaPayload, operationalDate: "2026-08-27", dswDate: "08/27/2026", capturedAt: "2026-08-27T16:10:00.000Z", routes: mgbaPayload.routes.map((row, index) => index === 0 ? { ...row, nextAvailOnDuty: "03:30 AM" } : row) });
+    assert.notEqual(logoutSignal.id, noLogoutSignal.id, "A new Next Avail On Duty source value creates a historical snapshot");
+    assert.equal((await getMgbaDswSnapshotById(logoutSignal.id))?.rows[0]?.nextAvailOnDuty, "03:30 AM", "Monitor rows return the exact persisted source value");
     process.env.MGBA_INGEST_TOKEN = "mgba-ingest-test-token";
     const { POST: ingestMgba } = await import("../app/api/internal/mgba/snapshot/route");
     const mgbaRequest = (body: unknown, token?: string) => new Request("http://localhost/api/internal/mgba/snapshot", { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
     assert.equal((await ingestMgba(mgbaRequest(mgbaPayload))).status, 401);
     assert.equal((await ingestMgba(mgbaRequest({ ...mgbaPayload, routes: [{}] }, "mgba-ingest-test-token"))).status, 400);
-    const ingestedMgba = await ingestMgba(mgbaRequest({ ...mgbaPayload, operationalDate: "2026-08-30", dswDate: "08/30/2026", capturedAt: "2026-08-30T16:00:00.000Z" }, "mgba-ingest-test-token"));
+    const ingestedMgba = await ingestMgba(mgbaRequest({ ...mgbaPayload, operationalDate: "2026-08-30", dswDate: "08/30/2026", capturedAt: "2026-08-30T16:00:00.000Z", routes: mgbaPayload.routes.map((row, index) => index === 0 ? { ...row, nextAvailOnDuty: "03:30 AM" } : row) }, "mgba-ingest-test-token"));
     assert.equal(ingestedMgba.status, 201);
+    const ingestedMgbaBody = await ingestedMgba.json() as { snapshotId: number };
+    assert.equal((await getMgbaDswSnapshotById(ingestedMgbaBody.snapshotId))?.rows[0]?.nextAvailOnDuty, "03:30 AM", "The ingestion endpoint accepts and preserves Next Avail On Duty");
+    const blankDriverMgba = await ingestMgba(mgbaRequest({ ...mgbaPayload, operationalDate: "2026-08-30", dswDate: "08/30/2026", capturedAt: "2026-08-30T16:24:00.000Z", routes: mgbaPayload.routes.map((row, index) => index === 0 ? { ...row, driverName: "", vehicleNumber: "510252", vscanPkgs: 167, delStops: 123, puStops: 3, diff: 123, nextAvailOnDuty: "18:00" } : row) }, "mgba-ingest-test-token"));
+    assert.equal(blankDriverMgba.status, 201, "Operational routes with a blank FedEx driver are accepted");
+    const blankDriverBody = await blankDriverMgba.json() as { snapshotId: number };
+    const blankDriverRows = (await getMgbaDswSnapshotById(blankDriverBody.snapshotId))?.rows || [];
+    assert.equal(blankDriverRows[0]?.driverName, "", "Blank FedEx driver data remains blank rather than fabricated");
+    assert.equal(blankDriverRows[0]?.nextAvailOnDuty, "18:00", "Blank-driver parent retains Next Avail On Duty");
     const admin = await client.execute("SELECT id FROM team_members WHERE email = 'admin@admin.com'");
     const adminTeamMemberId = Number(admin.rows[0].id);
     await upsertHomebaseUserMapping({ userId: "user-20", teamMemberId: adminTeamMemberId, displayName: "Lincoln Barker" });
@@ -876,6 +1171,8 @@ test("Homebase upserts by shift ID and DRO imports retain historical snapshots",
     delete process.env.DRO_INGEST_TOKEN;
     delete process.env.MGBA_INGEST_TOKEN;
     delete process.env.HOMEBASE_INGEST_TOKEN;
+    delete process.env.KVC_CREDENTIAL_MASTER_KEY;
+    delete process.env.ISSUE_UPLOAD_ROOT;
     if (integrationClient) {
       try { await integrationClient.close(); } catch { /* best-effort test cleanup */ }
     }

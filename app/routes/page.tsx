@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthGate";
+import { canManageFleet } from "../auth/roles";
 import { AppShell } from "../components/AppShell";
 import { routeColorPalette, routeTextColor } from "./config";
 
@@ -16,7 +17,7 @@ type RouteRecord = {
 
 export default function RoutesPage() {
   const { user } = useAuth();
-  const canManage = user?.role === "Fleet Manager";
+  const canManage = canManageFleet(user?.role);
   const [routes, setRoutes] = useState<RouteRecord[]>([]);
   const [editTarget, setEditTarget] = useState<RouteRecord | null>(null);
   const [addingRoute, setAddingRoute] = useState(false);
@@ -62,7 +63,7 @@ export default function RoutesPage() {
         <div className="route-list-head" role="row"><span role="columnheader">ROUTE</span><span role="columnheader">ASSIGNED VEHICLE</span><span role="columnheader">COLOR</span>{canManage && <span role="columnheader"><span className="sr-only">Actions</span></span>}</div>
         {loading ? <div className="empty">Loading routes…</div> : routes.map(route => <div className="route-list-row" role="row" key={route.routeNumber}>
           <span role="cell" className="route-identity"><strong className="route-number-badge" style={{ backgroundColor: route.color, color: routeTextColor(route.color) }}>{route.routeNumber}</strong>{route.displayName && <small>{route.displayName}</small>}</span>
-          <span role="cell">{route.vehicle ? <a className="route-vehicle-link" href={`/vehicles/${route.vehicle.id}`}><strong>Vehicle #{route.vehicle.number}</strong><small>{route.vehicle.makeModel}</small></a> : <span className="route-unassigned">Unassigned</span>}</span>
+          <span role="cell">{route.vehicle ? <a className="route-vehicle-link" href={`/vehicles/${encodeURIComponent(route.vehicle.number)}`}><strong>Vehicle #{route.vehicle.number}</strong><small>{route.vehicle.makeModel}</small></a> : <span className="route-unassigned">Unassigned</span>}</span>
           <span role="cell" className="route-color-label"><i style={{ backgroundColor: route.color }} /><code>{route.color}</code></span>
           {canManage && <span role="cell"><button type="button" className="edit-row-btn" onClick={() => setEditTarget(route)} aria-label={`Edit color for route ${route.routeNumber}`}>✎</button></span>}
         </div>)}

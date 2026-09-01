@@ -1,6 +1,6 @@
 import { asc, desc, eq, sql } from "drizzle-orm";
 import { getDb, type Database } from "../../db";
-import { mgbaDswRouteRows, mgbaDswSnapshots, mgbaDswStatusPackages, routes } from "../../db/schema";
+import { mgbaDswRouteRows, mgbaDswSnapshots, mgbaDswStatusPackages, routes, teamMembers } from "../../db/schema";
 import { mgbaDswRoutesAreIdentical, type ComparableMgbaDswRoute } from "./mgba-dsw-deduplication";
 import { normalizeMgbaDswRoute } from "./mgba-dsw-normalization";
 import { ensureRoute } from "./routes";
@@ -95,18 +95,30 @@ export async function getMgbaDswDateNavigation(operationalDate: string, database
   const dates = (await listMgbaDswOperationalDates(database)).map(item => item.operationalDate).sort();
   return { previousDate: dates.filter(date => date < operationalDate).at(-1) || null, nextDate: dates.find(date => date > operationalDate) || null, latestDate: dates.at(-1) || null };
 }
-export async function getMgbaDswRouteRows(snapshotId: number, database: Database = getDb()) {
-  return database.select({ id: mgbaDswRouteRows.id, snapshotId: mgbaDswRouteRows.snapshotId, routeId: mgbaDswRouteRows.routeId, registeredRouteNumber: routes.routeNumber,
+function dialablePhone(value: string) {
+  const digits = value.replace(/\D/g, "");
+  return digits.length === 10 ? digits : null;
+}
+
+export async function getMgbaDswRouteRows(snapshotId: number, database: Database = getDb(), includeDriverPhones = false) {
+  const rows = await database.select({ id: mgbaDswRouteRows.id, snapshotId: mgbaDswRouteRows.snapshotId, routeId: mgbaDswRouteRows.routeId, registeredRouteNumber: routes.routeNumber,
     serviceArea: mgbaDswRouteRows.serviceArea, waName: mgbaDswRouteRows.waName, vehicleNumber: mgbaDswRouteRows.vehicleNumber, driverName: mgbaDswRouteRows.driverName,
     routeNumber: mgbaDswRouteRows.routeNumber, rawRoute: mgbaDswRouteRows.rawRoute, dst: mgbaDswRouteRows.dst, vscanPkgs: mgbaDswRouteRows.vscanPkgs,
     delStops: mgbaDswRouteRows.delStops, puStops: mgbaDswRouteRows.puStops, diff: mgbaDswRouteRows.diff, actDelStops: mgbaDswRouteRows.actDelStops,
     actDelPkgs: mgbaDswRouteRows.actDelPkgs, actPuStops: mgbaDswRouteRows.actPuStops, actPuPkgs: mgbaDswRouteRows.actPuPkgs,
-    ilsPercent: mgbaDswRouteRows.ilsPercent, allStatusCodePkgs: mgbaDswRouteRows.allStatusCodePkgs, driverOrder: mgbaDswRouteRows.driverOrder, statusPackagesState: mgbaDswRouteRows.statusPackagesState,
+    ilsPercent: mgbaDswRouteRows.ilsPercent, nextAvailOnDuty: mgbaDswRouteRows.nextAvailOnDuty, allStatusCodePkgs: mgbaDswRouteRows.allStatusCodePkgs, driverOrder: mgbaDswRouteRows.driverOrder, statusPackagesState: mgbaDswRouteRows.statusPackagesState,
   }).from(mgbaDswRouteRows).leftJoin(routes, eq(mgbaDswRouteRows.routeId, routes.id)).where(eq(mgbaDswRouteRows.snapshotId, snapshotId)).orderBy(asc(mgbaDswRouteRows.driverOrder), asc(mgbaDswRouteRows.id));
+  if (!includeDriverPhones) return rows.map(row => ({ ...row, driverPhone: null }));
+  const roster = await database.select({ dswDriverName: teamMembers.dswDriverName, phoneNumber: teamMembers.phoneNumber }).from(teamMembers);
+  const phoneByDswDriverName = new Map(roster.flatMap(member => {
+    const phone = dialablePhone(member.phoneNumber);
+    return member.dswDriverName && phone ? [[member.dswDriverName, phone] as const] : [];
+  }));
+  return rows.map(row => ({ ...row, driverPhone: phoneByDswDriverName.get(row.driverName) || null }));
 }
-export async function getMgbaDswSnapshotById(snapshotId: number, database: Database = getDb()) {
+export async function getMgbaDswSnapshotById(snapshotId: number, database: Database = getDb(), now: Date = new Date()) {
   const [snapshot] = await database.select().from(mgbaDswSnapshots).where(eq(mgbaDswSnapshots.id, snapshotId)).limit(1);
-  return snapshot ? { snapshot, rows: await getMgbaDswRouteRows(snapshot.id, database) } : null;
+  return snapshot ? { snapshot, rows: await getMgbaDswRouteRows(snapshot.id, database, snapshot.operationalDate === chicagoCalendarDate(now)) } : null;
 }
 
 export async function getMgbaDswStatusPackagesForRouteRow(routeRowId: number, database: Database = getDb()) {

@@ -102,7 +102,7 @@ command -v npm >/dev/null
 command -v systemctl >/dev/null
 command -v curl >/dev/null
 
-install -d -o kvcfleet -g kvcfleet -m 0750 "${data_dir}" "${backup_dir}"
+install -d -o kvcfleet -g kvcfleet -m 0750 "${data_dir}" "${backup_dir}" "${data_dir}/uploads/issues"
 mkdir -p -- "${stage}"
 tar -xzf "${archive}" -C "${stage}"
 

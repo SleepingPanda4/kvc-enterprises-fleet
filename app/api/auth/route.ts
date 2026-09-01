@@ -1,7 +1,7 @@
 import { and, eq, or } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { authSessions, authTokens, teamMembers, users } from "../../../db/schema";
-import { clearSessionCookie, formatPhone, getCurrentUser, hashPassword, hashToken, newToken, normalizePhone, readSessionToken, sessionCookie, verifyPassword } from "../../auth/server";
+import { clearSessionCookie, displayName, formatPhone, getCurrentUser, hashPassword, hashToken, newToken, normalizeFedexId, normalizePhone, readSessionToken, sessionCookie, verifyPassword } from "../../auth/server";
 
 function authError(code: string, message: string, status: number, errorId?: string) {
   return Response.json({ error: message, code, ...(errorId ? { errorId } : {}) }, { status });
@@ -28,18 +28,19 @@ export async function POST(request: Request) {
   try {
     const payload = await request.json() as Record<string, unknown>; const action = String(payload.action || ""); const db = getDb();
     if (action === "login") {
-      const identifier = String(payload.identifier || "").trim().toLowerCase(); const phone = normalizePhone(identifier);
-      const [user] = await db.select().from(users).where(or(eq(users.email, identifier), eq(users.phoneNumber, formatPhone(phone)))).limit(1);
-      if (!user || !verifyPassword(String(payload.password || ""), user.passwordHash)) return authError("AUTH_INVALID_CREDENTIALS", "Email/phone or password is incorrect.", 401);
+      const rawIdentifier = String(payload.identifier || "").trim(); const identifier = rawIdentifier.toLowerCase(); const phone = normalizePhone(rawIdentifier); const fedexId = normalizeFedexId(rawIdentifier);
+      const [user] = await db.select().from(users).where(or(eq(users.email, identifier), eq(users.phoneNumber, formatPhone(phone)), ...(fedexId ? [eq(users.fedexId, fedexId)] : []))).limit(1);
+      if (!user || !verifyPassword(String(payload.password || ""), user.passwordHash)) return authError("AUTH_INVALID_CREDENTIALS", "FedEx ID, email, phone number, or password is incorrect.", 401);
       if (!user.verifiedAt) return authError("AUTH_EMAIL_UNVERIFIED", "Verify your email before signing in.", 403);
       const token = newToken(); await db.insert(authSessions).values({ tokenHash: hashToken(token), userId: user.id });
-      return Response.json({ user: { id: user.id, teamMemberId: user.teamMemberId, name: user.name, email: user.email, phoneNumber: user.phoneNumber, role: user.role } }, { headers: { "Set-Cookie": sessionCookie(token, request) } });
+      return Response.json({ user: { id: user.id, teamMemberId: user.teamMemberId, name: user.name, nickname: user.nickname, fedexId: user.fedexId, profileImageId: user.profileImageId, displayName: displayName(user), email: user.email, phoneNumber: user.phoneNumber, role: user.role } }, { headers: { "Set-Cookie": sessionCookie(token, request) } });
     }
     if (action === "signup") {
-      const name = String(payload.name || "").trim(); const email = String(payload.email || "").trim().toLowerCase(); const phoneNumber = formatPhone(String(payload.phoneNumber || "")); const password = String(payload.password || "");
+      const name = String(payload.name || "").trim(); const email = String(payload.email || "").trim().toLowerCase(); const phoneNumber = formatPhone(String(payload.phoneNumber || "")); const password = String(payload.password || ""); const rawFedexId = String(payload.fedexId || "").trim(); const fedexId = rawFedexId ? normalizeFedexId(rawFedexId) : null;
       if (!name || !/^\S+@\S+\.\S+$/.test(email) || normalizePhone(phoneNumber).length !== 10 || password.length < 8) return authError("AUTH_SIGNUP_INVALID", "Enter a name, valid email and phone, and a password of at least 8 characters.", 400);
+      if (rawFedexId && !fedexId) return authError("AUTH_FEDEX_ID_INVALID", "FedEx ID must contain digits only.", 400);
       const verificationToken = newToken();
-      const user = await db.transaction(async tx => { const [member] = await tx.insert(teamMembers).values({ name, email, phoneNumber, availabilityDays: "[]", role: "Team Member" }).returning(); const [created] = await tx.insert(users).values({ teamMemberId: member.id, name, email, phoneNumber, passwordHash: hashPassword(password), role: "Team Member" }).returning(); await tx.insert(authTokens).values({ tokenHash: hashToken(verificationToken), userId: created.id, type: "verify", expiresAt: new Date(Date.now()+86400000).toISOString() }); return created; });
+      const user = await db.transaction(async tx => { const [member] = await tx.insert(teamMembers).values({ name, email, phoneNumber, availabilityDays: "[]", role: "Team Member" }).returning(); const [created] = await tx.insert(users).values({ teamMemberId: member.id, name, email, phoneNumber, fedexId, passwordHash: hashPassword(password), role: "Team Member" }).returning(); await tx.insert(authTokens).values({ tokenHash: hashToken(verificationToken), userId: created.id, type: "verify", expiresAt: new Date(Date.now()+86400000).toISOString() }); return created; });
       const emailSent = await sendAccountEmail(user.email, "Verify your KVC Fleet account", `/verify?token=${encodeURIComponent(verificationToken)}`);
       return Response.json({ created: true, emailSent, message: emailSent ? "Check your email to verify the account." : "Account created. Email delivery must be configured before verification mail can send." }, { status: 201 });
     }
@@ -63,6 +64,7 @@ export async function POST(request: Request) {
     return authError("AUTH_ACTION_INVALID", "Unknown account action.", 400);
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
+    if (message.includes("fedex_id")) return authError("AUTH_FEDEX_ID_EXISTS", "That FedEx ID is already assigned to another account.", 409);
     if (message.includes("UNIQUE constraint")) return authError("AUTH_ACCOUNT_EXISTS", "That email or phone number is already registered.", 409);
     if (error instanceof SyntaxError) return authError("AUTH_REQUEST_INVALID", "The account request was not valid.", 400);
     const errorId = crypto.randomUUID();

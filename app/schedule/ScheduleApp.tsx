@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../auth/AuthGate";
+import { canManageFleet } from "../auth/roles";
 import { AppShell } from "../components/AppShell";
 import { routeNumbers, routeTextColor } from "../routes/config";
 import { useRouteColors } from "../routes/useRouteColors";
@@ -21,7 +22,7 @@ function shiftHours(entry: Entry) { const [startHour, startMinute] = entry.start
 
 export function ScheduleApp() {
   const { user } = useAuth();
-  const canManage = user?.role === "Fleet Manager";
+  const canManage = canManageFleet(user?.role);
   const { colorFor } = useRouteColors();
   const [weekStart, setWeekStart] = useState(saturdayFor);
   const [members, setMembers] = useState<Member[]>([]);

@@ -28,9 +28,11 @@ function formatPhone(value: string) {
 export async function GET(request: Request) {
   const auth = await requireUser(request); if (auth instanceof Response) return auth;
   try {
-    const rows = await getDb().select().from(teamMembers).orderBy(asc(teamMembers.name));
-    const members = rows.map(member => ({
+    const rows = await getDb().select({ member: teamMembers, profileImageId: users.profileImageId, fedexId: users.fedexId }).from(teamMembers).leftJoin(users, eq(users.teamMemberId, teamMembers.id)).orderBy(asc(teamMembers.name));
+    const members = rows.map(({ member, profileImageId, fedexId }) => ({
       ...member,
+      profileImageId,
+      fedexId,
       availabilityDays: parseAvailability(member.availabilityDays),
     }));
     return Response.json({ members });
@@ -53,6 +55,7 @@ export async function POST(request: Request) {
     const regularRoute = typeof payload.regularRoute === "string" ? payload.regularRoute.trim() || null : null;
     const saturdayRoute = typeof payload.saturdayRoute === "string" ? payload.saturdayRoute.trim() || null : null;
     const sundayRoute = typeof payload.sundayRoute === "string" ? payload.sundayRoute.trim() || null : null;
+    const dswDriverName = typeof payload.dswDriverName === "string" ? payload.dswDriverName.trim() || null : null;
     const role = payload.isManager === true || payload.isManager === "on" ? "Fleet Manager" : "Team Member";
     const requestedDays = Array.isArray(payload.availabilityDays) ? payload.availabilityDays : [];
     const availabilityDays = dayOrder.filter(day => requestedDays.includes(day));
@@ -82,6 +85,7 @@ export async function POST(request: Request) {
       regularRoute,
       saturdayRoute: availabilityDays.includes("Sat") ? saturdayRoute : null,
       sundayRoute: availabilityDays.includes("Sun") ? sundayRoute : null,
+      dswDriverName,
       role,
     }).returning();
 
@@ -89,6 +93,9 @@ export async function POST(request: Request) {
       member: { ...member, availabilityDays: parseAvailability(member.availabilityDays) },
     }, { status: 201 });
   } catch (error) {
+    if (error instanceof Error && error.message.includes("team_members_dsw_driver_name_unique")) {
+      return Response.json({ error: "That DSW Driver Name is already linked to another team member." }, { status: 409 });
+    }
     return Response.json(
       { error: error instanceof Error ? error.message : "Could not add team member." },
       { status: 500 },
@@ -108,6 +115,7 @@ export async function PATCH(request: Request) {
     const regularRoute = typeof payload.regularRoute === "string" ? payload.regularRoute.trim() || null : null;
     const saturdayRoute = typeof payload.saturdayRoute === "string" ? payload.saturdayRoute.trim() || null : null;
     const sundayRoute = typeof payload.sundayRoute === "string" ? payload.sundayRoute.trim() || null : null;
+    const dswDriverName = typeof payload.dswDriverName === "string" ? payload.dswDriverName.trim() || null : null;
     const role = payload.isManager === true || payload.isManager === "on" ? "Fleet Manager" : "Team Member";
     const requestedDays = Array.isArray(payload.availabilityDays) ? payload.availabilityDays : [];
     const availabilityDays = dayOrder.filter(day => requestedDays.includes(day));
@@ -141,6 +149,7 @@ export async function PATCH(request: Request) {
       regularRoute,
       saturdayRoute: availabilityDays.includes("Sat") ? saturdayRoute : null,
       sundayRoute: availabilityDays.includes("Sun") ? sundayRoute : null,
+      dswDriverName,
       role,
       updatedAt: new Date().toISOString(),
     }).where(eq(teamMembers.id, id)).returning();
@@ -155,6 +164,9 @@ export async function PATCH(request: Request) {
       member: { ...member, availabilityDays: parseAvailability(member.availabilityDays) },
     });
   } catch (error) {
+    if (error instanceof Error && error.message.includes("team_members_dsw_driver_name_unique")) {
+      return Response.json({ error: "That DSW Driver Name is already linked to another team member." }, { status: 409 });
+    }
     return Response.json(
       { error: error instanceof Error ? error.message : "Could not update team member." },
       { status: 500 },

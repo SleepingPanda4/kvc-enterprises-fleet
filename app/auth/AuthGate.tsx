@@ -1,16 +1,19 @@
 "use client";
 
 import { FormEvent, createContext, useContext, useEffect, useState } from "react";
+import type { UserRole } from "./roles";
+import { UnsavedChangesProvider } from "./UnsavedChanges";
+import { SiteBrandingProvider } from "../branding/SiteBranding";
 
-type User = { id: number; teamMemberId: number | null; name: string; email: string; phoneNumber: string; role: "Team Member" | "Fleet Manager" };
+export type AuthUser = { id: number; teamMemberId: number | null; name: string; nickname: string | null; fedexId: string | null; profileImageId: string | null; displayName: string; email: string; phoneNumber: string; role: UserRole };
 type AuthMode = "login" | "signup" | "forgot";
 type SignupResult = { email: string };
 
-const AuthContext = createContext<{ user: User | null; logout: () => Promise<void> }>({ user: null, logout: async () => undefined });
+const AuthContext = createContext<{ user: AuthUser | null; logout: () => Promise<void>; updateUser: (user: AuthUser) => void }>({ user: null, logout: async () => undefined, updateUser: () => undefined });
 export function useAuth() { return useContext(AuthContext); }
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -24,10 +27,10 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   if (loading) return <main className="auth-loading">Loading KVC Fleet…</main>;
   if (!user) return <AuthScreen onLogin={setUser} />;
-  return <AuthContext.Provider value={{ user, logout }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, logout, updateUser: setUser }}><SiteBrandingProvider><UnsavedChangesProvider>{children}</UnsavedChangesProvider></SiteBrandingProvider></AuthContext.Provider>;
 }
 
-function AuthScreen({ onLogin }: { onLogin: (user: User) => void }) {
+function AuthScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
   const path = typeof window === "undefined" ? "" : window.location.pathname;
   const token = typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("token") || "";
   const [mode, setMode] = useState<AuthMode>("login");
@@ -44,6 +47,8 @@ function AuthScreen({ onLogin }: { onLogin: (user: User) => void }) {
     const form = new FormData(event.currentTarget);
     const action = path === "/verify" ? "verify" : path === "/reset-password" ? "reset" : mode;
     const submittedEmail = String(form.get("email") || "").trim().toLowerCase();
+    if (action === "signup" && String(form.get("password") || "") !== String(form.get("confirmPassword") || "")) { setSaving(false); setError("Password and confirmation do not match."); return; }
+    form.delete("confirmPassword");
 
     try {
       const response = await fetch("/api/auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, ...Object.fromEntries(form), token }) });
@@ -91,11 +96,11 @@ function AuthScreen({ onLogin }: { onLogin: (user: User) => void }) {
     </div> : <>
       <p className="eyebrow">SECURE ACCESS</p>
       <h1>{path === "/verify" ? "Verify account" : path === "/reset-password" ? "Reset password" : mode === "signup" ? "Create account" : mode === "forgot" ? "Forgot password" : "Welcome back"}</h1>
-      <p>{special ? "Complete this account request to continue." : mode === "login" ? "Sign in with your email or phone number." : mode === "signup" ? "Join the KVC team roster and verify your email." : "We’ll email you a password reset link."}</p>
+      <p>{special ? "Complete this account request to continue." : mode === "login" ? "Sign in with your FedEx ID, email, or phone number." : mode === "signup" ? "Join the KVC team roster and verify your email." : "We’ll email you a password reset link."}</p>
       {message && <div className="success-banner">{message}</div>}
       {error && <div className="error-banner" role="alert">{error}</div>}
       <form className="auth-form" onSubmit={submit}>
-        {path === "/verify" ? <p>Click below to verify this account.</p> : path === "/reset-password" ? <label>New password<input name="password" type="password" minLength={8} required autoComplete="new-password" /></label> : mode === "login" ? <><label>Email or phone<input name="identifier" required autoComplete="username" value={loginIdentifier} onChange={event => setLoginIdentifier(event.target.value)} /></label><label>Password<input name="password" type="password" required autoComplete="current-password" /></label></> : mode === "signup" ? <><label>Name<input name="name" required autoComplete="name" /></label><label>Email<input name="email" type="email" required autoComplete="email" /></label><label>Phone number<input name="phoneNumber" type="tel" required autoComplete="tel" /></label><label>Password<input name="password" type="password" minLength={8} required autoComplete="new-password" /></label></> : <label>Email<input name="email" type="email" required autoComplete="email" /></label>}
+        {path === "/verify" ? <p>Click below to verify this account.</p> : path === "/reset-password" ? <label>New password<input name="password" type="password" minLength={8} required autoComplete="new-password" /></label> : mode === "login" ? <><label>FedEx ID, email, or phone<input name="identifier" required autoComplete="username" value={loginIdentifier} onChange={event => setLoginIdentifier(event.target.value)} /></label><label>Password<input name="password" type="password" required autoComplete="current-password" /></label></> : mode === "signup" ? <><label>Name<input name="name" required autoComplete="name" /></label><label>FedEx ID<input name="fedexId" inputMode="numeric" pattern="[0-9]*" autoComplete="off" /></label><label>Email<input name="email" type="email" required autoComplete="email" /></label><label>Phone number<input name="phoneNumber" type="tel" required autoComplete="tel" /></label><label>Password<input name="password" type="password" minLength={8} required autoComplete="new-password" /></label><label>Confirm password<input name="confirmPassword" type="password" minLength={8} required autoComplete="new-password" /></label></> : <label>Email<input name="email" type="email" required autoComplete="email" /></label>}
         <button className="primary" disabled={saving}>{saving ? "Please wait…" : path === "/verify" ? "Verify account" : path === "/reset-password" ? "Set new password" : mode === "login" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}</button>
       </form>
       {!special && <div className="auth-links">{mode !== "login" && <button type="button" onClick={() => { setMode("login"); setMessage(""); setError(""); }}>Back to sign in</button>}{mode === "login" && <><button type="button" onClick={() => setMode("forgot")}>Forgot password?</button><button type="button" onClick={() => setMode("signup")}>Create an account</button></>}</div>}

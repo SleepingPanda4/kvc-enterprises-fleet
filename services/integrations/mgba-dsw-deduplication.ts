@@ -3,14 +3,14 @@ export type ComparableMgbaDswRoute = {
   routeNumber: string | null; rawRoute: string | null; dst: string | null;
   vscanPkgs: number | null; delStops: number | null; puStops: number | null; diff: number | null;
   actDelStops: number | null; actDelPkgs: number | null; actPuStops: number | null; actPuPkgs: number | null;
-  ilsPercent: number | null; allStatusCodePkgs: number | null; driverOrder?: number;
+  ilsPercent: number | null; nextAvailOnDuty?: string | null; allStatusCodePkgs: number | null; driverOrder?: number;
 };
 
-function normalizeText(value: string | null) { return value?.trim() || null; }
+function normalizeText(value: string | null | undefined) { return value?.trim() || null; }
 function comparable(row: ComparableMgbaDswRoute) {
   return [normalizeText(row.serviceArea), normalizeText(row.waName), normalizeText(row.vehicleNumber), row.driverName.trim(),
     normalizeText(row.routeNumber), normalizeText(row.rawRoute), normalizeText(row.dst), row.vscanPkgs, row.delStops,
-    row.puStops, row.diff, row.actDelStops, row.actDelPkgs, row.actPuStops, row.actPuPkgs, row.ilsPercent, row.allStatusCodePkgs, row.driverOrder ?? 0];
+    row.puStops, row.diff, row.actDelStops, row.actDelPkgs, row.actPuStops, row.actPuPkgs, row.ilsPercent, normalizeText(row.nextAvailOnDuty), row.allStatusCodePkgs, row.driverOrder ?? 0];
 }
 
 export function mgbaDswRoutesAreIdentical(left: readonly ComparableMgbaDswRoute[], right: readonly ComparableMgbaDswRoute[]) {

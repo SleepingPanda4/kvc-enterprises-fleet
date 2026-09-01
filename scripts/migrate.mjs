@@ -1,6 +1,6 @@
 import { createClient } from "@libsql/client";
 import { mkdir } from "node:fs/promises";
-import { randomBytes, scryptSync } from "node:crypto";
+import { randomBytes, randomUUID, scryptSync } from "node:crypto";
 import path from "node:path";
 
 const databaseUrl = process.env.DATABASE_URL || "file:./data/kvc-fleet.db";
@@ -81,9 +81,25 @@ const statements = [
     service_scheduled INTEGER DEFAULT 0 NOT NULL,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
     resolved_at TEXT,
+    resolution_notes TEXT,
+    reported_by_user_id INTEGER,
+    reported_by_name TEXT,
     FOREIGN KEY (vehicle_id) REFERENCES vehicles (id) ON DELETE CASCADE
   )`,
   "CREATE INDEX IF NOT EXISTS idx_issues_vehicle_status ON issues (vehicle_id, status)",
+  `CREATE TABLE IF NOT EXISTS issue_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    public_id TEXT NOT NULL,
+    issue_id INTEGER NOT NULL,
+    original_filename TEXT NOT NULL,
+    stored_filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    context TEXT DEFAULT 'report' NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (issue_id) REFERENCES issues (id) ON DELETE CASCADE
+  )`,
+  "CREATE INDEX IF NOT EXISTS issue_attachments_issue_idx ON issue_attachments (issue_id)",
   `CREATE TABLE IF NOT EXISTS team_members (
     id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
     name TEXT NOT NULL,
@@ -94,6 +110,7 @@ const statements = [
     regular_route TEXT,
     saturday_route TEXT,
     sunday_route TEXT,
+    dsw_driver_name TEXT,
     role TEXT DEFAULT 'Team Member' NOT NULL,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
@@ -244,6 +261,7 @@ const statements = [
     act_pu_stops INTEGER,
     act_pu_pkgs INTEGER,
     ils_percent REAL,
+    next_avail_on_duty TEXT,
     all_status_code_pkgs INTEGER,
     driver_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
@@ -276,7 +294,7 @@ const statements = [
   )`,
   "CREATE UNIQUE INDEX IF NOT EXISTS schedule_entries_member_week_day_unique ON schedule_entries (team_member_id, week_start, day)",
   `CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, team_member_id INTEGER, name TEXT NOT NULL,
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, team_member_id INTEGER, name TEXT NOT NULL, nickname TEXT, fedex_id TEXT,
     email TEXT NOT NULL, phone_number TEXT NOT NULL, password_hash TEXT NOT NULL,
     role TEXT DEFAULT 'Team Member' NOT NULL, verified_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL, FOREIGN KEY (team_member_id) REFERENCES team_members (id) ON DELETE SET NULL
@@ -292,6 +310,18 @@ const statements = [
     token_hash TEXT PRIMARY KEY NOT NULL, user_id INTEGER NOT NULL, type TEXT NOT NULL, expires_at TEXT NOT NULL,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL, FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
   )`,
+  `CREATE TABLE IF NOT EXISTS integration_credentials (
+    integration TEXT PRIMARY KEY NOT NULL, username TEXT NOT NULL DEFAULT '',
+    password_ciphertext TEXT, password_iv TEXT, password_tag TEXT, encryption_version TEXT,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL, updated_by_user_id INTEGER,
+    FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS integration_credential_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, integration TEXT NOT NULL, action TEXT NOT NULL,
+    user_id INTEGER NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT
+  )`,
+  "CREATE INDEX IF NOT EXISTS integration_credential_audit_integration_idx ON integration_credential_audit (integration)",
 ];
 
 try {
@@ -304,16 +334,42 @@ try {
     ["email", "TEXT"],
     ["saturday_route", "TEXT"],
     ["sunday_route", "TEXT"],
+    ["dsw_driver_name", "TEXT"],
     ["role", "TEXT NOT NULL DEFAULT 'Team Member'"],
   ]) {
     if (!teamMemberColumns.rows.some(row => String(row.name) === name)) {
       await client.execute(`ALTER TABLE team_members ADD COLUMN ${name} ${definition}`);
     }
   }
+  await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS team_members_dsw_driver_name_unique ON team_members (dsw_driver_name) WHERE dsw_driver_name IS NOT NULL");
+  const userColumns = await client.execute("PRAGMA table_info(users)");
+  if (!userColumns.rows.some(row => String(row.name) === "nickname")) {
+    await client.execute("ALTER TABLE users ADD COLUMN nickname TEXT");
+  }
+  if (!userColumns.rows.some(row => String(row.name) === "profile_image_id")) await client.execute("ALTER TABLE users ADD COLUMN profile_image_id TEXT");
+  if (!userColumns.rows.some(row => String(row.name) === "fedex_id")) await client.execute("ALTER TABLE users ADD COLUMN fedex_id TEXT");
+  await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_fedex_id_unique ON users (fedex_id) WHERE fedex_id IS NOT NULL");
+  await client.execute("CREATE TABLE IF NOT EXISTS stored_images (id TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL, stored_filename TEXT NOT NULL, mime_type TEXT NOT NULL, size_bytes INTEGER NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL)");
+  await client.execute("CREATE TABLE IF NOT EXISTS site_settings (id INTEGER PRIMARY KEY NOT NULL, company_name TEXT NOT NULL DEFAULT 'KVC Enterprises', identity_mode TEXT NOT NULL DEFAULT 'name', primary_color TEXT NOT NULL DEFAULT '#087A46', sidebar_color TEXT NOT NULL DEFAULT '#102A20', accent_color TEXT NOT NULL DEFAULT '#F2C14E', logo_image_id TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL, updated_by_user_id INTEGER)");
   const issueColumns = await client.execute("PRAGMA table_info(issues)");
   if (!issueColumns.rows.some(row => String(row.name) === "service_scheduled")) {
     await client.execute("ALTER TABLE issues ADD COLUMN service_scheduled INTEGER NOT NULL DEFAULT 0");
   }
+  if (!issueColumns.rows.some(row => String(row.name) === "resolution_notes")) {
+    await client.execute("ALTER TABLE issues ADD COLUMN resolution_notes TEXT");
+  }
+  if (!issueColumns.rows.some(row => String(row.name) === "reported_by_user_id")) await client.execute("ALTER TABLE issues ADD COLUMN reported_by_user_id INTEGER");
+  if (!issueColumns.rows.some(row => String(row.name) === "reported_by_name")) await client.execute("ALTER TABLE issues ADD COLUMN reported_by_name TEXT");
+  await client.execute("CREATE INDEX IF NOT EXISTS issues_reported_by_user_idx ON issues (reported_by_user_id)");
+  const issueAttachmentColumns = await client.execute("PRAGMA table_info(issue_attachments)");
+  if (!issueAttachmentColumns.rows.some(row => String(row.name) === "public_id")) {
+    await client.execute("ALTER TABLE issue_attachments ADD COLUMN public_id TEXT");
+  }
+  const attachmentsWithoutPublicId = await client.execute("SELECT id FROM issue_attachments WHERE public_id IS NULL OR TRIM(public_id) = ''");
+  for (const attachment of attachmentsWithoutPublicId.rows) {
+    await client.execute({ sql: "UPDATE issue_attachments SET public_id = ? WHERE id = ?", args: [randomUUID(), Number(attachment.id)] });
+  }
+  await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS issue_attachments_public_id_unique ON issue_attachments (public_id)");
   const scheduleColumns = await client.execute("PRAGMA table_info(schedule_entries)");
   if (!scheduleColumns.rows.some(row => String(row.name) === "notes")) {
     await client.execute("ALTER TABLE schedule_entries ADD COLUMN notes TEXT");
@@ -321,6 +377,9 @@ try {
   const mgbaRouteRowColumns = await client.execute("PRAGMA table_info(mgba_dsw_route_rows)");
   if (!mgbaRouteRowColumns.rows.some(row => String(row.name) === "driver_order")) {
     await client.execute("ALTER TABLE mgba_dsw_route_rows ADD COLUMN driver_order INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!mgbaRouteRowColumns.rows.some(row => String(row.name) === "next_avail_on_duty")) {
+    await client.execute("ALTER TABLE mgba_dsw_route_rows ADD COLUMN next_avail_on_duty TEXT");
   }
   if (!mgbaRouteRowColumns.rows.some(row => String(row.name) === "status_packages_state")) {
     await client.execute("ALTER TABLE mgba_dsw_route_rows ADD COLUMN status_packages_state TEXT NOT NULL DEFAULT 'not_applicable'");

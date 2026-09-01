@@ -62,6 +62,21 @@ The service listens on the LXC network interfaces. From another device on the
 same private network, open `http://10.10.10.105:3000`.
 
 The application requires an authenticated account for every operational page.
+
+### Integration credential encryption
+
+Fleet Owner integration credentials use AES-256-GCM and require a server-only
+`KVC_CREDENTIAL_MASTER_KEY`. Set it only in a protected service environment
+file during deployment; it must be the exact Base64 encoding of 32 random
+bytes. Generate a new key on the LXC when this feature is deployed with:
+
+```bash
+openssl rand -base64 32
+```
+
+Never commit this key, store it in SQLite, or send it to a browser. Changing
+the key makes existing encrypted integration passwords unreadable until they
+are replaced.
 `deploy/Caddyfile.example` configures Caddy to terminate HTTPS for
 `fleet.sleepingpandaind.com` and proxy to the local app. Keep port 3000 private;
 only Caddy should be exposed to the internet.
@@ -280,6 +295,7 @@ protected file on the LXC:
 install -d -o root -g kvcfleet -m 0750 /etc/kvc-fleet
 printf '%s\n' 'MGBA_INGEST_TOKEN=replace-with-a-long-random-token' > /etc/kvc-fleet/mgba.env
 printf '%s\n' 'MGBA_WORKER_URL=http://127.0.0.1:3102' >> /etc/kvc-fleet/mgba.env
+printf '%s\n' 'MGBA_WORKER_TOKEN=replace-with-a-separate-long-random-token' >> /etc/kvc-fleet/mgba.env
 chown root:kvcfleet /etc/kvc-fleet/mgba.env
 chmod 0640 /etc/kvc-fleet/mgba.env
 systemctl daemon-reload
